@@ -23,8 +23,8 @@ from core.state import BotState
 class StatusBar(Static):
     """Top status bar showing key metrics."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -53,8 +53,8 @@ class StatusBar(Static):
 class ScannerPanel(Static):
     """Shows top trading candidates."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -85,8 +85,8 @@ class ScannerPanel(Static):
 class PositionsPanel(Static):
     """Shows current positions."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -120,8 +120,8 @@ class PositionsPanel(Static):
 class SignalPanel(Static):
     """Shows current signal being evaluated."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -165,8 +165,8 @@ class SignalPanel(Static):
 class StatsPanel(Static):
     """Shows daily trading stats."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -195,8 +195,8 @@ class StatsPanel(Static):
 class SanityPanel(Static):
     """Shows system health."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
@@ -224,8 +224,8 @@ class SanityPanel(Static):
 class LogPanel(Static):
     """Scrollable log panel."""
     
-    def __init__(self, state: BotState):
-        super().__init__()
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
         self.state = state
     
     def compose(self) -> ComposeResult:
