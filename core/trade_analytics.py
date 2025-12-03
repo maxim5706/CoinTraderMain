@@ -8,14 +8,15 @@ This creates a rich dataset for:
 """
 
 import json
-import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from core.logging_utils import get_logger
+
 ANALYTICS_DIR = Path(__file__).parent.parent / "data" / "analytics"
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
