@@ -1721,8 +1721,7 @@ class TradingBotV2:
             self.state.kill_reason = f"Daily loss limit (${settings.daily_max_loss_usd})"
     
     async def _display_loop(self):
-        """Update display periodically."""
-        from rich.live import Live
+        """Update display periodically using Textual TUI."""
         from core.logging_utils import suppress_console_logging
         
         await asyncio.sleep(2)
@@ -1731,18 +1730,25 @@ class TradingBotV2:
         suppress_console_logging(True)
         
         try:
-            with Live(
-                self.dashboard.render_full(),
-                console=self.dashboard.console,
-                refresh_per_second=2,
-                screen=True
-            ) as live:
-                while self._running:
-                    try:
-                        live.update(self.dashboard.render_full())
-                        await asyncio.sleep(0.5)
-                    except Exception:
-                        await asyncio.sleep(1)
+            # Try new Textual TUI first
+            try:
+                from apps.dashboard.tui_live import run_tui_async
+                await run_tui_async(self.state)
+            except ImportError:
+                # Fallback to old Rich dashboard
+                from rich.live import Live
+                with Live(
+                    self.dashboard.render_full(),
+                    console=self.dashboard.console,
+                    refresh_per_second=2,
+                    screen=True
+                ) as live:
+                    while self._running:
+                        try:
+                            live.update(self.dashboard.render_full())
+                            await asyncio.sleep(0.5)
+                        except Exception:
+                            await asyncio.sleep(1)
         finally:
             # Restore console logging when TUI exits
             suppress_console_logging(False)
