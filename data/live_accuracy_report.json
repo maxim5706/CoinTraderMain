@@ -1,0 +1,149 @@
+{
+  "timestamp": "2025-12-02T18:20:02.743995+00:00",
+  "summary": {
+    "total_tests": 40,
+    "passed": 37,
+    "failed": 3,
+    "success_rate": 92.5
+  },
+  "critical_failures": [
+    "Position Data Quality - SYRUP-USD",
+    "PnL Accuracy",
+    "State Synchronization"
+  ],
+  "detailed_results": [
+    {
+      "test": "API Keys Present",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:19:57.745297+00:00"
+    },
+    {
+      "test": "Live Mode Set",
+      "passed": true,
+      "details": "Mode: live",
+      "timestamp": "2025-12-02T18:19:57.745478+00:00"
+    },
+    {
+      "test": "Safe Trade Size",
+      "passed": true,
+      "details": "$10.0",
+      "timestamp": "2025-12-02T18:19:57.745487+00:00"
+    },
+    {
+      "test": "Stop Loss Set",
+      "passed": true,
+      "details": "$30.0",
+      "timestamp": "2025-12-02T18:19:57.745493+00:00"
+    },
+    {
+      "test": "Profile Configured",
+      "passed": "prod",
+      "details": "Profile: prod",
+      "timestamp": "2025-12-02T18:19:57.745497+00:00"
+    },
+    {
+      "test": "Exchange Connected",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:19:58.142015+00:00"
+    },
+    {
+      "test": "Portfolio Data Retrieved",
+      "passed": true,
+      "details": "$502.44, 16 positions",
+      "timestamp": "2025-12-02T18:19:58.142089+00:00"
+    },
+    {
+      "test": "Position Data Quality - SYRUP-USD",
+      "passed": false,
+      "details": "qty:33.90000000, value:$9.16, price:$0.00000000",
+      "timestamp": "2025-12-02T18:19:58.142140+00:00"
+    },
+    {
+      "test": "Truth Sync Function",
+      "passed": true,
+      "details": "Sync status: None",
+      "timestamp": "2025-12-02T18:20:02.059895+00:00"
+    },
+    {
+      "test": "Position Count Analysis",
+      "passed": true,
+      "details": "Local: 1, Exchange: 10, Status: SYNC_NEEDED",
+      "timestamp": "2025-12-02T18:20:02.281897+00:00"
+    },
+    {
+      "test": "Exchange Positions Found",
+      "passed": true,
+      "details": "10 positions worth $104.44",
+      "timestamp": "2025-12-02T18:20:02.281979+00:00"
+    },
+    {
+      "test": "Top Position 1",
+      "passed": true,
+      "details": "AAVE-USD: 0.05800000 @ $0.0000 = $10.91",
+      "timestamp": "2025-12-02T18:20:02.282018+00:00"
+    },
+    {
+      "test": "Top Position 2",
+      "passed": true,
+      "details": "IMX-USD: 35.11000000 @ $0.0000 = $10.86",
+      "timestamp": "2025-12-02T18:20:02.282039+00:00"
+    },
+    {
+      "test": "Top Position 3",
+      "passed": true,
+      "details": "ORCA-USD: 8.00000000 @ $0.0000 = $10.75",
+      "timestamp": "2025-12-02T18:20:02.282052+00:00"
+    },
+    {
+      "test": "Position Recovery Test",
+      "passed": true,
+      "details": "Recovered 10 positions",
+      "timestamp": "2025-12-02T18:20:02.283787+00:00"
+    },
+    {
+      "test": "Recovery Function Available",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:20:02.283804+00:00"
+    },
+    {
+      "test": "Pre-Trade Validation",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:20:02.283812+00:00"
+    },
+    {
+      "test": "PnL Engine Integrated",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:20:02.283836+00:00"
+    },
+    {
+      "test": "PnL Calculation Methods",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:20:02.283849+00:00"
+    },
+    {
+      "test": "PnL Accuracy",
+      "passed": false,
+      "details": "Exchange: $-11.95, Local: $0.00, Diff: $11.95",
+      "timestamp": "2025-12-02T18:20:02.430350+00:00"
+    },
+    {
+      "test": "Position Registry Integrated",
+      "passed": true,
+      "details": "",
+      "timestamp": "2025-12-02T18:20:02.430422+00:00"
+    },
+    {
+      "test": "Registry Position Sync",
+      "passed": true,
+      "details": "Registry: 10, Router: 10",
+      "timestamp": "2025-12-02T18:20:02.430447+00:00"
+    },
+    {
+      "test": "Order Executor Available",
+      "passed": 

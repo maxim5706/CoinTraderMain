@@ -36,10 +36,17 @@ def make_signal(
 
 @pytest.mark.asyncio
 async def test_warmth_gate_blocks_before_scoring(monkeypatch):
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     state = BotState()
-    router = OrderRouter(get_price_func=lambda _: 100.0, state=state)
-    router._portfolio_value = 1000.0
-    router._usd_balance = 1000.0
+    router = create_test_router_with_mocks(
+        mode=TradingMode.PAPER,
+        balance=1000.0,
+        fixed_stop_pct=0.01,  # 1% for tight stop
+        min_rr_ratio=1.0      # Allow any R:R for this test
+    )
+    router.state = state
 
     # Warmth gate should trigger first and avoid ML/score calls
     monkeypatch.setattr(tier_scheduler, "is_symbol_warm", lambda *_: False)
@@ -97,10 +104,18 @@ async def test_regime_rejection_counters(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rr_rejection_counter(monkeypatch):
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     state = BotState()
-    router = OrderRouter(get_price_func=lambda _: 100.0, state=state)
-    router._portfolio_value = 1000.0
-    router._usd_balance = 1000.0
+    router = create_test_router_with_mocks(
+        mode=TradingMode.PAPER,
+        balance=1000.0,
+        fixed_stop_pct=0.004,  # 0.4% stop (will fail R:R with min_rr_ratio=5.0)
+        tp1_pct=0.003,         # 0.3% TP1 (poor R:R ratio)
+        min_rr_ratio=5.0       # Very high R:R requirement
+    )
+    router.state = state
 
     monkeypatch.setattr(tier_scheduler, "is_symbol_warm", lambda *_: True)
     intelligence._market_regime = "normal"
@@ -119,10 +134,10 @@ async def test_rr_rejection_counter(monkeypatch):
     )
     monkeypatch.setattr(intelligence, "score_entry", lambda *_, **__: stub_score)
     monkeypatch.setattr(intelligence, "check_position_limits", lambda *_, **__: (True, "OK"))
+    monkeypatch.setattr(intelligence, "record_trade", lambda: None)
     intelligence._last_trade_time = None
-    monkeypatch.setattr(settings, "min_rr_ratio", 5.0)
 
-    # Even with fixed geometry, R:R should fail when the threshold is strict
+    # Bad R:R geometry - 0.4% stop vs 0.3% TP1 = 0.75 R:R ratio (< 5.0 required)
     signal = make_signal(price=100.0, stop_price=99.6, tp1=100.3, tp2=101.0)
     result = await router.open_position(signal)
 
@@ -199,13 +214,22 @@ def test_single_ml_call_path(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_gate_funnel_distribution(monkeypatch):
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     state = BotState()
-    router = OrderRouter(get_price_func=lambda _: 100.0, state=state)
-    router._portfolio_value = 1000.0
-    router._usd_balance = 1000.0
+    # Create router with high R:R ratio requirement to test the gate
+    router = create_test_router_with_mocks(
+        mode=TradingMode.PAPER,
+        balance=1000.0,
+        min_rr_ratio=5.0,  # High R:R requirement to trigger rejection
+        fixed_stop_pct=0.01,  # 1% stop
+        tp1_pct=0.005         # 0.5% TP1 (bad R:R)
+    )
+    router.state = state
     intelligence._market_regime = "risk_off"
-    monkeypatch.setattr(settings, "min_rr_ratio", 5.0)
     monkeypatch.setattr(intelligence, "check_position_limits", lambda *_, **__: (True, "OK"))
+    monkeypatch.setattr(intelligence, "record_trade", lambda: None)
     intelligence._last_trade_time = None
 
     # Warmth gate fails first, then other gates on subsequent calls

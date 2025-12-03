@@ -128,8 +128,9 @@ def test_paper_profile_sets_balance_1000():
 
 def test_paper_balance_uses_config():
     """OrderRouter should use settings.paper_start_balance_usd, not hardcoded."""
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
     from core.config import settings
-    from execution.order_router import OrderRouter
     from core.state import BotState
     
     # Temporarily set paper mode
@@ -145,8 +146,12 @@ def test_paper_balance_uses_config():
         from core.config import settings as fresh_settings
         
         state = BotState()
-        # Create router in paper mode
-        router = OrderRouter(get_price_func=lambda s: 100.0, state=state)
+        # Create router with DI using the config balance
+        router = create_test_router_with_mocks(
+            mode=TradingMode.PAPER,
+            balance=fresh_settings.paper_start_balance_usd
+        )
+        router.state = state
         
         # Should use paper_start_balance_usd from config (default 1000)
         assert router._usd_balance == fresh_settings.paper_start_balance_usd

@@ -62,15 +62,16 @@ class Settings(BaseSettings):
     breakout_vol_mult: float = 1.3
     
     # Stops/TPs (after fees: 1.8% round-trip with limit orders)
-    fixed_stop_pct: float = 0.025
+    # Tightened stops to prevent -12% average losses
+    fixed_stop_pct: float = 0.035  # Increased from 2.5% to 3.5%
     tp1_pct: float = 0.04
     tp2_pct: float = 0.07
     tp1_partial_pct: float = 0.5
-    stop_atr_mult: float = 1.5
+    stop_atr_mult: float = 1.2  # Tighter ATR stops (was 1.5)
     tp2_impulse_mult: float = 0.5
-    max_hold_minutes: int = 180
-    time_stop_enabled: bool = False
-    min_rr_ratio: float = 1.5
+    max_hold_minutes: int = 120  # Reduce from 180 to 120 min
+    time_stop_enabled: bool = True  # Enable time stops
+    min_rr_ratio: float = 1.8  # Increase from 1.5 to 1.8
     
     # Trailing
     trail_be_trigger_pct: float = 0.025
@@ -102,10 +103,10 @@ class Settings(BaseSettings):
     base_score_strict_cutoff: float = 60
     entry_score_min: float = 70
     
-    # Thesis invalidation
-    thesis_trend_flip_5m: float = -0.5
-    thesis_trend_flip_15m: float = -0.3
-    thesis_vwap_distance: float = -1.0
+    # Thesis invalidation - tighter to prevent big losses
+    thesis_trend_flip_5m: float = -0.3  # Tighter from -0.5
+    thesis_trend_flip_15m: float = -0.2  # Tighter from -0.3
+    thesis_vwap_distance: float = -0.8  # Tighter from -1.0
     
     # Liquidity
     spread_max_bps: float = 25.0

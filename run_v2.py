@@ -6,10 +6,18 @@ Three-clock architecture:
 - Clock A: Real-time WebSocket stream (always on)
 - Clock B: Rolling intraday context (every minute)
 - Clock C: Background slow context (every 30 min)
+
+Usage:
+  python run_v2.py                    # Use env TRADING_MODE
+  python run_v2.py --paper           # Force paper mode
+  python run_v2.py --live            # Force live mode
+  python run_v2.py --mode=paper      # Explicit mode setting
 """
 
 import asyncio
+import argparse
 import json
+import os
 import signal as sig
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,9 +25,12 @@ from typing import Optional
 
 from core.logging_utils import get_logger, setup_logging
 from core.config import settings
+from core.mode_config import ConfigurationManager
+from core.mode_configs import TradingMode
 from core.profiles import apply_profile
 from core.models import Signal, SignalType, CandleBuffer
 from core.logger import log_candle_1m, log_burst, log_signal, utc_iso_str
+from core.trading_container import TradingContainer
 
 setup_logging()
 logger = get_logger(__name__)
@@ -45,6 +56,8 @@ class TradingBotV2:
     
     def __init__(self):
         self.dashboard = DashboardV2()
+        self.mode = ConfigurationManager.get_trading_mode()
+        self.config = ConfigurationManager.get_config_for_mode(self.mode)
         self.orchestrator = StrategyOrchestrator()
         self.scanner = SymbolScanner()
         self.collector: Optional[CandleCollector | MockCollector] = None
@@ -80,7 +93,7 @@ class TradingBotV2:
         
         # Shared state for dashboard
         self.state = self.dashboard.state
-        self.state.mode = settings.trading_mode
+        self.state.mode = self.mode.value
         self.state.profile = getattr(settings, "profile", "prod")
         self.state.daily_loss_limit_usd = settings.daily_max_loss_usd
         self.state.startup_time = datetime.now(timezone.utc)
@@ -102,14 +115,14 @@ class TradingBotV2:
         
         self.dashboard.print_startup(api_ok, api_msg)
         
-        if not api_ok and not settings.is_paper:
+        if not api_ok and self.mode == TradingMode.LIVE:
             logger.error(
                 "Cannot run in LIVE mode without valid API keys. "
                 "Fix .env or switch to TRADING_MODE=paper."
             )
             return
         
-        if not api_ok:
+        if not api_ok and self.mode == TradingMode.PAPER:
             logger.warning("Running in paper mode with mock data (no API keys)")
         
         self._running = True
@@ -153,8 +166,18 @@ class TradingBotV2:
         # Rehydrate candles from persistent storage
         self._rehydrate_from_store(stream_symbols)
     
-        # Initialize order router
-        self.router = OrderRouter(get_price_func=self._get_price, state=self.state)
+        # Initialize order router with mode-specific dependencies
+        container = TradingContainer(self.mode, self.config)
+        self.router = OrderRouter(
+            get_price_func=self._get_price,
+            state=self.state,
+            mode=self.mode,
+            config=self.config,
+            executor=container.get_executor(),
+            portfolio=container.get_portfolio_manager(),
+            persistence=container.get_persistence(),
+            stop_manager=container.get_stop_manager(),
+        )
         
         # Connect candle collector for thesis invalidation checks
         if self.collector:
@@ -236,7 +259,7 @@ class TradingBotV2:
     
     async def _check_and_rebalance(self):
         """Check if over budget and offer to rebalance at startup."""
-        if settings.is_paper or not self.router:
+        if self.mode == TradingMode.PAPER or not self.router:
             return
         
         # Wait for portfolio snapshot
@@ -903,7 +926,7 @@ class TradingBotV2:
                 if not hasattr(self, '_last_status_write'):
                     self._last_status_write = datetime.now(timezone.utc)
                 if (datetime.now(timezone.utc) - self._last_portfolio_refresh).total_seconds() >= 15:
-                    if not settings.is_paper and settings.is_configured:
+                    if self.mode == TradingMode.LIVE and settings.is_configured:
                         from core.portfolio import portfolio_tracker
                         from core.logger import log_pnl_snapshot, utc_iso_str as pnl_utc_iso_str
                         from core.persistence import sync_with_exchange
@@ -1515,7 +1538,7 @@ class TradingBotV2:
         self.state.realized_pnl = self.router.daily_stats.total_pnl
         
         # Use real portfolio snapshot if available
-        use_snapshot = (not settings.is_paper) and bool(self.router._portfolio_snapshot)
+        use_snapshot = (self.mode == TradingMode.LIVE) and bool(self.router._portfolio_snapshot)
         
         if use_snapshot:
             snap = self.router._portfolio_snapshot
@@ -1581,7 +1604,7 @@ class TradingBotV2:
         self.state.max_exposure_pct = settings.portfolio_max_exposure_pct * 100
         
         # Balances for UI separation
-        if settings.is_paper:
+        if self.mode == TradingMode.PAPER:
             self.state.paper_balance_usd = self.router._usd_balance
             self.state.live_balance_usd = 0.0
         else:
@@ -1659,8 +1682,79 @@ class TradingBotV2:
 
 
 def main():
-    """Main entry point."""
+    """Main entry point with command line mode switching."""
     import sys
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='CoinTrader V2 - Multi-strategy trading bot',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python run_v2.py                    # Use TRADING_MODE from .env
+  python run_v2.py --paper           # Force paper trading mode
+  python run_v2.py --live            # Force live trading mode  
+  python run_v2.py --mode=live       # Explicit mode setting
+        """
+    )
+    
+    parser.add_argument('--mode', choices=['paper', 'live'],
+                       help='Override trading mode (paper or live)')
+    parser.add_argument('--paper', action='store_true',
+                       help='Shortcut for --mode=paper')
+    parser.add_argument('--live', action='store_true',
+                       help='Shortcut for --mode=live')
+    parser.add_argument('--validate', action='store_true',
+                       help='Run validation checks before starting')
+    
+    args = parser.parse_args()
+    
+    # Handle mode override
+    if args.paper and args.live:
+        print("❌ Cannot specify both --paper and --live")
+        sys.exit(1)
+    
+    original_mode = os.environ.get('TRADING_MODE', 'paper')
+    
+    if args.paper:
+        os.environ['TRADING_MODE'] = 'paper'
+        print("🔄 Override: Using PAPER trading mode")
+    elif args.live:
+        os.environ['TRADING_MODE'] = 'live'
+        print("🔄 Override: Using LIVE trading mode")
+    elif args.mode:
+        os.environ['TRADING_MODE'] = args.mode
+        print(f"🔄 Override: Using {args.mode.upper()} trading mode")
+    else:
+        print(f"📋 Using {original_mode.upper()} mode from environment")
+    
+    # Reload configuration if mode was overridden
+    if args.paper or args.live or args.mode:
+        from importlib import reload
+        import core.config
+        reload(core.config)
+        # Re-import settings with new mode
+        from core.config import settings
+    
+    print(f"🎯 Trading Mode: {settings.trading_mode}")
+    print(f"🔑 API Keys: {'Configured' if settings.coinbase_api_key else 'Missing'}")
+    
+    # Run validation if requested
+    if args.validate:
+        print("\n🧪 Running pre-start validation...")
+        from tests.integration.data_sync_validator import DataSynchronizationValidator
+        import asyncio as validation_asyncio
+        
+        async def run_validation():
+            validator = DataSynchronizationValidator()
+            success = await validator.run_complete_validation()
+            return success
+        
+        validation_success = validation_asyncio.run(run_validation())
+        if not validation_success:
+            print("❌ Validation failed - check issues before starting")
+            if input("Continue anyway? (y/N): ").lower() != 'y':
+                sys.exit(1)
     
     bot = TradingBotV2()
     shutdown_requested = False

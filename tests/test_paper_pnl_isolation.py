@@ -7,11 +7,19 @@ from run_v2 import TradingBotV2
 
 
 def test_paper_ignores_live_snapshot_for_pnl():
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     orig_mode = settings.trading_mode
     settings.trading_mode = "paper"
 
     bot = TradingBotV2()
-    router = OrderRouter(get_price_func=lambda *_: 10.0, state=bot.state)
+    router = create_test_router_with_mocks(
+        mode=TradingMode.PAPER,
+        balance=500.0  # Set initial balance to match test expectations
+    )
+    router.state = bot.state
+    router.get_price = lambda *_: 10.0
     bot.router = router
 
     # Inject position and bogus live snapshot
@@ -31,6 +39,8 @@ def test_paper_ignores_live_snapshot_for_pnl():
     router.positions["TEST-USD"] = pos
     router._portfolio_snapshot = type("Snap", (), {"total_unrealized_pnl": 999, "total_value": 9999, "total_cash": 9000, "total_crypto": 999})()
     router._usd_balance = 500.0
+    # Make sure the portfolio manager balance matches
+    router.portfolio.balance = 500.0
 
     bot._get_price = lambda symbol: 10.0
     bot._update_positions_state()

@@ -22,7 +22,7 @@ class OrchestratorConfig:
     """Configuration for which strategies are enabled."""
     enable_burst_flag: bool = True
     enable_vwap_reclaim: bool = True
-    enable_mean_reversion: bool = True
+    enable_mean_reversion: bool = False  # DISABLED - 0% win rate, losing -$16.91
     enable_rotation: bool = False  # Future
 
 

@@ -1,0 +1,29 @@
+{
+  "ts": "2025-12-02T17:42:43.902Z",
+  "ws_ok": true,
+  "ws_last_age": 0.0,
+  "ws_reconnect_count": 0,
+  "mode": "paper",
+  "profile": "prod",
+  "universe": {
+    "eligible": 115,
+    "warm": 96,
+    "cold": 19,
+    "tier1": 75,
+    "tier2": 15,
+    "tier3": 25
+  },
+  "ml": {
+    "fresh_pct": 100.0,
+    "total_cached": 74
+  },
+  "rejections": {
+    "spread": 0,
+    "warmth": 0,
+    "regime": 0,
+    "score": 0,
+    "rr": 0,
+    "limits": 0
+  },
+  "positions": 0
+}

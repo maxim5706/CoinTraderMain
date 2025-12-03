@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from .base import BaseStrategy, StrategySignal, SignalDirection
 from core.config import settings
+from core.mode_config import ConfigurationManager
 
 
 class BurstFlagStrategy(BaseStrategy):
@@ -35,6 +36,10 @@ class BurstFlagStrategy(BaseStrategy):
         # Delegate to existing strategy for now
         from logic.strategy import BurstFlagStrategy as LegacyStrategy
         self._strategy = LegacyStrategy()
+        
+        # Get mode-specific config
+        mode = ConfigurationManager.get_trading_mode()
+        self.config = ConfigurationManager.get_config_for_mode(mode)
     
     def analyze(
         self,
@@ -101,55 +106,55 @@ class BurstFlagStrategy(BaseStrategy):
         )
     
     def _calculate_edge_score(self, impulse, flag, features: dict, buffer) -> float:
-        """Calculate base edge score (0-100)."""
-        score = 10  # Base for having a valid pattern
+        """Calculate base edge score (0-100) using mode-specific thresholds."""
+        score = self.config.bf_base_score  # Base for having a valid pattern
         
         # Impulse strength (up to 30 points)
         if impulse:
-            if impulse.pct_move >= 5.0:
+            if impulse.pct_move >= self.config.bf_impulse_strong_pct:
                 score += 15
-            elif impulse.pct_move >= 3.0:
+            elif impulse.pct_move >= self.config.bf_impulse_medium_pct:
                 score += 10
-            elif impulse.pct_move >= 2.0:
+            elif impulse.pct_move >= self.config.bf_impulse_weak_pct:
                 score += 5
             
-            if impulse.green_candles >= 5:
+            if impulse.green_candles >= self.config.bf_green_candles_strong:
                 score += 10
-            elif impulse.green_candles >= 3:
+            elif impulse.green_candles >= self.config.bf_green_candles_medium:
                 score += 5
             
-            if impulse.avg_volume > 2.0:
+            if impulse.avg_volume > self.config.bf_volume_threshold:
                 score += 5
         
         # Flag quality (up to 25 points)
         if flag:
-            # Ideal retrace is 30-50%
-            if 0.3 <= flag.retrace_pct <= 0.5:
+            # Configurable retrace scoring
+            if self.config.bf_retrace_ideal_min <= flag.retrace_pct <= self.config.bf_retrace_ideal_max:
                 score += 15
-            elif 0.2 <= flag.retrace_pct <= 0.6:
+            elif self.config.bf_retrace_good_min <= flag.retrace_pct <= self.config.bf_retrace_good_max:
                 score += 10
-            elif flag.retrace_pct < 0.7:
+            elif flag.retrace_pct < self.config.bf_retrace_acceptable:
                 score += 5
             
             # Volume decay during flag
             if hasattr(flag, 'avg_volume') and impulse:
-                if flag.avg_volume < impulse.avg_volume * 0.5:
+                if flag.avg_volume < impulse.avg_volume * self.config.bf_volume_decay_strong:
                     score += 10
-                elif flag.avg_volume < impulse.avg_volume * 0.7:
+                elif flag.avg_volume < impulse.avg_volume * self.config.bf_volume_decay_medium:
                     score += 5
         
         # Trend alignment (up to 20 points)
         trend_5m = features.get('trend_5m', 0)
-        if trend_5m > 0.5:
+        if trend_5m > self.config.bf_trend_strong:
             score += 15
-        elif trend_5m > 0.2:
+        elif trend_5m > self.config.bf_trend_medium:
             score += 10
         elif trend_5m > 0:
             score += 5
         
         # Volume confirmation (up to 15 points)
         vol_ratio = features.get('vol_ratio', 1.0)
-        if vol_ratio >= 3.0:
+        if vol_ratio >= self.config.bf_vol_ratio_strong:
             score += 15
         elif vol_ratio >= 2.0:
             score += 10

@@ -40,12 +40,13 @@ PROFILES: Dict[str, Dict[str, Any]] = {
     },
     
     # live-profile: Active live trading
-    # Score 50 requires higher quality signals, R:R protects from bad trades
+    # Tuned based on trading data: 82.5% win rate but -12.20% avg loss
     "live-profile": {
-        "entry_score_min": 50,       # Require better quality signals
-        "min_rr_ratio": 1.5,         # Mean reversion R:R is lower but higher win%
-        "spread_max_bps": 20.0,      # Tighter spreads only
+        "entry_score_min": 60,       # Increase selectivity (was 50)
+        "min_rr_ratio": 2.0,         # Require better R:R (was 1.5) 
+        "spread_max_bps": 18.0,      # Tighter spreads only (was 20.0)
         "ml_min_confidence": 0.0,    # ML warming up, don't gate on it
+        "fixed_stop_pct": 0.04,      # Wider stops for live (was 0.035)
     },
     
     # === TESTING PROFILES ===

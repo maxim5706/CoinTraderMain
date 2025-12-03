@@ -29,6 +29,9 @@ def make_signal(price: float = 100.0) -> Signal:
 
 @pytest.mark.asyncio
 async def test_mode_matrix_same_decision(monkeypatch):
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     # Ensure warmth and scoring pass
     monkeypatch.setattr(tier_scheduler, "is_symbol_warm", lambda *_: True)
     score_stub = SimpleNamespace(
@@ -44,6 +47,8 @@ async def test_mode_matrix_same_decision(monkeypatch):
     )
     monkeypatch.setattr(intelligence, "score_entry", lambda *_, **__: score_stub)
     monkeypatch.setattr(intelligence, "record_trade", lambda: None)
+    monkeypatch.setattr(intelligence, "check_position_limits", lambda *_, **__: (True, "OK"))
+    monkeypatch.setattr(intelligence, "log_trade_entry", lambda *_, **__: None)
     intelligence._last_trade_time = None
     monkeypatch.setattr(persistence, "save_positions", lambda positions: None)
     monkeypatch.setattr(persistence, "load_positions", lambda: {})
@@ -57,37 +62,32 @@ async def test_mode_matrix_same_decision(monkeypatch):
     orig_key = settings.coinbase_api_key
     orig_secret = settings.coinbase_api_secret
     settings.trading_mode = "paper"
-    router_paper = OrderRouter(get_price_func=lambda *_: signal.price, state=None)
-    router_paper._portfolio_value = 1000.0
-    router_paper._usd_balance = 1000.0
+    
+    router_paper = create_test_router_with_mocks(
+        mode=TradingMode.PAPER,
+        balance=1000.0,
+        fixed_stop_pct=0.02,  # 2% stop for good R:R
+        tp1_pct=0.045,        # 4.5% TP1  
+        min_rr_ratio=1.5      # Lower requirement
+    )
+    router_paper.get_price = lambda *_: signal.price
     paper_position = await router_paper.open_position(signal)
 
-    # LIVE path (use fake client + live buy)
+    # LIVE path
     settings.trading_mode = "live"
     settings.coinbase_api_key = ""
     settings.coinbase_api_secret = ""
-    monkeypatch.setattr(OrderRouter, "_init_live_client", lambda self: None)
-
-    async def fake_live_buy(self, **kwargs):
-        return Position(
-            symbol=kwargs["symbol"],
-            side=Side.BUY,
-            entry_price=kwargs["price"],
-            entry_time=datetime.now(timezone.utc),
-            size_usd=kwargs["price"] * kwargs["qty"],
-            size_qty=kwargs["qty"],
-            stop_price=kwargs["stop_price"],
-            tp1_price=kwargs["tp1_price"],
-            tp2_price=kwargs["tp2_price"],
-            time_stop_min=kwargs["time_stop_min"],
-            state=PositionState.OPEN,
-        )
-
-    monkeypatch.setattr(OrderRouter, "_execute_live_buy", fake_live_buy)
-
-    router_live = OrderRouter(get_price_func=lambda *_: signal.price, state=None)
-    router_live._portfolio_value = 1000.0
-    router_live._usd_balance = 1000.0
+    
+    router_live = create_test_router_with_mocks(
+        mode=TradingMode.LIVE,
+        balance=1000.0,
+        fixed_stop_pct=0.02,  # Same config as paper
+        tp1_pct=0.045,
+        min_rr_ratio=1.5
+    )
+    router_live.get_price = lambda *_: signal.price
+    # Mock truth sync to allow trades in test mode
+    router_live._validate_before_trade = lambda *_: True
     live_position = await router_live.open_position(signal)
 
     # Restore mode
@@ -122,6 +122,9 @@ def test_no_live_client_in_paper(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_live_path_uses_live_execution(monkeypatch):
+    from tests.test_helpers import create_test_router_with_mocks, MockLiveExecutor
+    from core.mode_configs import TradingMode
+    
     orig_mode = settings.trading_mode
     orig_key = settings.coinbase_api_key
     orig_secret = settings.coinbase_api_secret
@@ -147,37 +150,36 @@ async def test_live_path_uses_live_execution(monkeypatch):
     )
     monkeypatch.setattr(intelligence, "score_entry", lambda *_, **__: score_stub)
     monkeypatch.setattr(intelligence, "check_position_limits", lambda *_, **__: (True, "OK"))
-    intelligence._last_trade_time = None
+    monkeypatch.setattr(intelligence, "record_trade", lambda: None)
     intelligence._last_trade_time = None
 
+    # Create router with mock live executor that we can track
+    router = create_test_router_with_mocks(
+        mode=TradingMode.LIVE,
+        balance=1000.0,
+        fixed_stop_pct=0.02,  # 2% stop for good R:R
+        tp1_pct=0.045,        # 4.5% TP1  
+        min_rr_ratio=1.5      # Lower requirement
+    )
+    
+    # Track if the live executor was called
+    original_open = router.executor.open_position
     live_called = {"flag": False}
-
-    async def fake_live_buy(self, **kwargs):
+    
+    async def tracked_open(*args, **kwargs):
         live_called["flag"] = True
-        return Position(
-            symbol=kwargs["symbol"],
-            side=Side.BUY,
-            entry_price=kwargs["price"],
-            entry_time=datetime.now(timezone.utc),
-            size_usd=kwargs["price"] * kwargs["qty"],
-            size_qty=kwargs["qty"],
-            stop_price=kwargs["stop_price"],
-            tp1_price=kwargs["tp1_price"],
-            tp2_price=kwargs["tp2_price"],
-            time_stop_min=kwargs["time_stop_min"],
-            state=PositionState.OPEN,
-        )
-
-    monkeypatch.setattr(OrderRouter, "_execute_live_buy", fake_live_buy)
-    monkeypatch.setattr(OrderRouter, "_init_live_client", lambda self: setattr(self, "_client", object()))
+        return await original_open(*args, **kwargs)
+    
+    router.executor.open_position = tracked_open
+    router.get_price = lambda *_: 100.0
+    
+    # Mock truth sync to allow trades in test mode
+    router._validate_before_trade = lambda *_: True
 
     signal = make_signal()
-    router = OrderRouter(get_price_func=lambda *_: signal.price, state=None)
-    router._portfolio_value = 1000.0
-    router._usd_balance = 1000.0
     await router.open_position(signal)
 
-    assert live_called["flag"]
+    assert live_called["flag"], "Live executor should have been called"
     settings.trading_mode = orig_mode
     settings.coinbase_api_key = orig_key
     settings.coinbase_api_secret = orig_secret

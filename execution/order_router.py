@@ -6,24 +6,34 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from datafeeds.universe import tier_scheduler
+from services.alerts import alert_error, alert_trade_entry, alert_trade_exit
 from core.config import settings
 from core.logging_utils import get_logger
 from core.logger import log_trade, utc_iso_str
-from core.models import Signal, SignalType, Position, PositionState, Side, TradeResult
-from core.persistence import save_positions, load_positions, sync_with_exchange, clear_position
-from core.portfolio import portfolio_tracker, PortfolioSnapshot
+from core.mode_config import ConfigurationManager
+from core.mode_configs import TradingMode
+from core.models import Position, PositionState, Side, Signal, SignalType, TradeResult
+from core.pnl_engine import PnLEngine
+from core.position_registry import PositionRegistry
+import core.persistence as persistence_backend
+from core.portfolio import PortfolioSnapshot, portfolio_tracker
+from core.trading_container import TradingContainer
+from core.trading_interfaces import (
+    IExecutor,
+    IPortfolioManager,
+    IPositionPersistence,
+    IStopOrderManager,
+)
 from execution.order_manager import order_manager
 from execution.order_utils import (
-    calculate_limit_buy_price,
     OrderFatalError,
     OrderResult,
+    calculate_limit_buy_price,
     parse_order_response,
     rate_limiter,
 )
-from execution.paper_execution import PaperExecution
 from logic.intelligence import EntryScore, intelligence
-from datafeeds.universe import tier_scheduler
-from services.alerts import alert_error, alert_trade_entry, alert_trade_exit
 
 logger = get_logger(__name__)
 
@@ -132,17 +142,41 @@ class OrderRouter:
     def MAKER_FEE_PCT(self) -> float:
         return settings.maker_fee_pct  # 0.6% for Intro 1
     
-    def __init__(self, get_price_func, state=None):
+    def __init__(
+        self,
+        get_price_func,
+        state=None,
+        *,
+        mode: TradingMode | None = None,
+        executor: IExecutor | None = None,
+        portfolio: IPortfolioManager | None = None,
+        persistence: IPositionPersistence | None = None,
+        stop_manager: IStopOrderManager | None = None,
+        config=None,
+    ):
         """
         Args:
             get_price_func: Callable that takes symbol and returns current price
         """
         self.get_price = get_price_func
         self.state = state  # Optional BotState for rejection counters
-        self.positions: dict[str, Position] = {}
+        self.mode = mode or ConfigurationManager.get_trading_mode()
+        self.config = config or ConfigurationManager.get_config_for_mode(self.mode)
+        self.container = TradingContainer(self.mode, self.config)
+        self.executor = executor or self.container.get_executor()
+        self.portfolio = portfolio or self.container.get_portfolio_manager()
+        self.persistence = persistence or self.container.get_persistence()
+        self.stop_manager = stop_manager or self.container.get_stop_manager()
+
+        # Initialize new unified components (keeping existing interface)
+        self.pnl_engine = PnLEngine(self.config)
+        self.position_registry = PositionRegistry(self.config)
+        
+        # Keep existing names but backed by new registry
+        self.positions: dict[str, Position] = {}  # Will sync with position_registry
         self.trade_history: list[TradeResult] = []
         self.daily_stats = DailyStats()
-        self._client = None
+        self._client = getattr(self.portfolio, "client", None)
         self._product_info: dict[str, dict] = {}  # Cache product minimums
         self._usd_balance: float = 0.0
         self._order_cooldown: dict[str, datetime] = {}  # Prevent duplicate orders
@@ -152,42 +186,203 @@ class OrderRouter:
         self._portfolio_value: float = 0.0  # Tracked portfolio value
         self._exchange_holdings: dict[str, float] = {}  # Actual holdings from exchange
         self._portfolio_snapshot: Optional[PortfolioSnapshot] = None  # Real portfolio from Coinbase
-        self.paper_executor = PaperExecution() if settings.is_paper else None
+
+        if hasattr(self.stop_manager, "bind_client") and self._client:
+            try:
+                self.stop_manager.bind_client(self._client)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        # Refresh balances and load positions
+        try:
+            self.portfolio.update_portfolio_state()
+        except Exception:
+            pass
+        self._usd_balance = self.portfolio.get_available_balance()
+        self._portfolio_value = self.portfolio.get_total_portfolio_value()
+        self._portfolio_snapshot = getattr(self.portfolio, "portfolio_snapshot", None)
+        self._exchange_holdings = getattr(self.portfolio, "exchange_holdings", {})
+
+        self.positions = self.persistence.load_positions()
         
-        # Paper defaults to a simulated cash balance so exposure gates don't block
-        if settings.is_paper:
-            paper_balance = settings.paper_start_balance_usd
-            self._usd_balance = paper_balance
-            self._portfolio_value = paper_balance
-            if self.state:
-                self.state.paper_balance_usd = paper_balance
-                self.state.paper_balance = paper_balance  # Also set state.paper_balance
-                self.state.live_balance_usd = 0.0
+        # Sync loaded positions into new registry
+        for symbol, position in self.positions.items():
+            self.position_registry.add_position(position)
+
+        if self.mode == TradingMode.LIVE and self._client:
+            order_manager.init_client(self._client)
+            order_manager.sync_with_exchange()
+            self.positions = persistence_backend.sync_with_exchange(self._client, self.positions, quiet=False)
+            total_cost = sum(p.cost_basis for p in self.positions.values())
+            total_value = sum(p.size_usd for p in self.positions.values())
+            logger.info(
+                "[SYNC] Total: %s positions, cost $%s, value $%s",
+                len(self.positions),
+                f"{total_cost:.0f}",
+                f"{total_value:.0f}",
+            )
+        if self.mode == TradingMode.PAPER and self.state:
+            self.state.paper_balance_usd = self._usd_balance
+            self.state.paper_balance = self._usd_balance
+            self.state.live_balance_usd = 0.0
+        self._update_cached_balances()
+        self._sync_position_stores()
+    
+    def _sync_position_stores(self):
+        """Keep self.positions dict in sync with position_registry."""
+        # This maintains backward compatibility while using new registry
+        registry_positions = self.position_registry.get_all_positions()
         
-        if not settings.is_paper and settings.is_configured:
-            self._init_live_client()
-            self._refresh_balance()
-            # Initialize order manager with client
-            if self._client:
-                order_manager.init_client(self._client)
-                order_manager.sync_with_exchange()
-            # Load and sync positions with exchange
-            self.positions = load_positions()
-            logger.info("[PERSIST] Loaded %s LIVE positions", len(self.positions))
-            if self._client:
-                self.positions = sync_with_exchange(self._client, self.positions, quiet=False)
-                # Print what we synced for debugging
-                total_cost = sum(p.cost_basis for p in self.positions.values())
-                total_value = sum(p.size_usd for p in self.positions.values())
-                logger.info(
-                    "[SYNC] Total: %s positions, cost $%s, value $%s",
-                    len(self.positions),
-                    f"{total_cost:.0f}",
-                    f"{total_value:.0f}",
-                )
-        else:
-            # Explicitly keep live client disabled in paper mode even if keys are present
-            self._client = None
+        # Update self.positions to match registry
+        self.positions.clear()
+        self.positions.update(registry_positions)
+    
+    def _verify_exchange_truth(self) -> bool:
+        """Verify our local positions match exchange reality."""
+        if self.mode != TradingMode.LIVE:
+            return True  # Paper mode always in sync
+        
+        try:
+            # Get fresh exchange snapshot
+            if hasattr(self.portfolio, 'get_snapshot'):
+                snapshot = self.portfolio.get_snapshot()
+                if not snapshot:
+                    logger.warning("[TRUTH] Could not get exchange snapshot")
+                    return False
+                
+                # Compare positions
+                exchange_positions = {
+                    pos.symbol: pos for pos in snapshot.positions.values() 
+                    if not pos.is_cash and pos.value_usd >= 1.0
+                }
+                
+                local_symbols = set(self.positions.keys())
+                exchange_symbols = set(exchange_positions.keys())
+                
+                # Check for drift
+                missing_local = exchange_symbols - local_symbols
+                extra_local = local_symbols - exchange_symbols
+                
+                if missing_local or extra_local:
+                    logger.error(
+                        "[TRUTH] Position drift detected! Missing local: %s, Extra local: %s",
+                        missing_local, extra_local
+                    )
+                    
+                    # Attempt automatic reconciliation
+                    return self._recover_from_drift(exchange_positions)
+                
+                # Verify quantities for existing positions
+                for symbol in local_symbols & exchange_symbols:
+                    local_pos = self.positions[symbol]
+                    exchange_pos = exchange_positions[symbol]
+                    
+                    # Allow small differences due to rounding
+                    qty_diff = abs(local_pos.size_qty - exchange_pos.qty)
+                    if qty_diff > 0.00001:  # More than 1/100,000th difference
+                        logger.warning(
+                            "[TRUTH] Quantity drift for %s: Local=%.8f, Exchange=%.8f",
+                            symbol, local_pos.size_qty, exchange_pos.qty
+                        )
+                
+                logger.debug("[TRUTH] Exchange sync verified ✓")
+                return True
+                
+        except Exception as e:
+            logger.error("[TRUTH] Exchange verification failed: %s", e)
+            return False
+    
+    def _recover_from_drift(self, exchange_positions: dict) -> bool:
+        """Recover from position drift by syncing with exchange."""
+        logger.info("[TRUTH] Attempting drift recovery...")
+        
+        try:
+            # Clear local positions
+            self.positions.clear()
+            self.position_registry = PositionRegistry(self.config)
+            
+            # Rebuild from exchange truth
+            for symbol, exchange_pos in exchange_positions.items():
+                if exchange_pos.value_usd >= 1.0:  # Only significant positions
+                    
+                    # Create position from exchange data
+                    from core.models import Position, Side
+                    
+                    position = Position(
+                        symbol=symbol,
+                        side=Side.BUY,  # Assume long positions
+                        entry_price=exchange_pos.entry_price,
+                        entry_time=datetime.now(timezone.utc),  # Unknown, use now
+                        size_usd=exchange_pos.value_usd,
+                        size_qty=exchange_pos.qty,
+                        stop_price=exchange_pos.entry_price * 0.95,  # Conservative stop
+                        tp1_price=exchange_pos.entry_price * 1.05,   # Conservative TP
+                        tp2_price=exchange_pos.entry_price * 1.10,
+                        entry_cost_usd=exchange_pos.cost_basis,
+                        strategy_id="recovered"  # Mark as recovered
+                    )
+                    
+                    # Add to both stores
+                    self.positions[symbol] = position
+                    self.position_registry.add_position(position)
+            
+            # Save recovered positions
+            self.persistence.save_positions(self.positions)
+            
+            logger.info("[TRUTH] Recovery complete: %d positions restored", len(self.positions))
+            return True
+            
+        except Exception as e:
+            logger.error("[TRUTH] Recovery failed: %s", e)
+            return False
+    
+    def _validate_before_trade(self, symbol: str) -> bool:
+        """Validate system state before placing any trade."""
+        
+        # Check exchange sync
+        if not self._verify_exchange_truth():
+            logger.error("[TRUTH] Cannot trade - exchange sync failed")
+            return False
+        
+        # Verify we have current price data
+        current_price = self.get_price(symbol)
+        if current_price <= 0:
+            logger.error("[TRUTH] Cannot trade %s - no price data", symbol)
+            return False
+        
+        # Check if we already have this position on exchange
+        if self.mode == TradingMode.LIVE and hasattr(self.portfolio, 'get_snapshot'):
+            snapshot = self.portfolio.get_snapshot()
+            if snapshot:
+                exchange_position = snapshot.positions.get(symbol)
+                if exchange_position and exchange_position.value_usd >= 1.0:
+                    logger.warning("[TRUTH] %s position already exists on exchange", symbol)
+                    return False
+        
+        return True
+    
+    async def _verify_position_created(self, symbol: str, expected_qty: float):
+        """Verify that a position was actually created on the exchange."""
+        await asyncio.sleep(2)  # Give exchange time to update
+        
+        try:
+            if hasattr(self.portfolio, 'get_snapshot'):
+                snapshot = self.portfolio.get_snapshot()
+                if snapshot:
+                    exchange_position = snapshot.positions.get(symbol)
+                    if exchange_position and exchange_position.qty >= expected_qty * 0.95:  # 5% tolerance
+                        logger.info("[TRUTH] ✓ Position verified on exchange: %s %.6f", 
+                                  symbol, exchange_position.qty)
+                    else:
+                        logger.error("[TRUTH] ❌ Position NOT found on exchange: %s (expected %.6f)", 
+                                   symbol, expected_qty)
+                        
+                        # Mark position as problematic
+                        if symbol in self.positions:
+                            self.positions[symbol].strategy_id += "_UNVERIFIED"
+                            self.persistence.save_positions(self.positions)
+        except Exception as e:
+            logger.error("[TRUTH] Position verification failed for %s: %s", symbol, e)
     
     def _init_live_client(self):
         """Initialize Coinbase client for live trading."""
@@ -315,6 +510,21 @@ class OrderRouter:
         if hasattr(self, '_candle_collector') and self._candle_collector:
             return self._candle_collector.get_buffer(symbol)
         return None
+
+    def _update_cached_balances(self):
+        """Refresh cached balance/portfolio values from the injected portfolio manager."""
+        try:
+            if hasattr(self.portfolio, "positions_value"):
+                try:
+                    self.portfolio.positions_value = sum(p.size_usd for p in self.positions.values())
+                except Exception:
+                    pass
+            self._usd_balance = self.portfolio.get_available_balance()
+            self._portfolio_value = self.portfolio.get_total_portfolio_value()
+            self._portfolio_snapshot = getattr(self.portfolio, "portfolio_snapshot", self._portfolio_snapshot)
+            self._exchange_holdings = getattr(self.portfolio, "exchange_holdings", self._exchange_holdings)
+        except Exception:
+            pass
 
     def _cancel_order(self, order_id: str):
         """Best-effort cancel for unfilled orders."""
@@ -541,6 +751,18 @@ class OrderRouter:
             ", ".join(entry_score.reasons[:2]),
         )
         
+        # New position limits check using registry 
+        # Use the calculated size_usd that will be determined later
+        estimated_size_usd = settings.max_trade_usd  # Conservative estimate
+        can_open, limit_reason = self.position_registry.can_open_position(
+            signal.strategy_id or "default", 
+            estimated_size_usd
+        )
+        if not can_open:
+            logger.info("[LIMITS] %s blocked by position registry: %s", symbol, limit_reason)
+            self._record_rejection("limits", symbol, {"reason": limit_reason})
+            return None
+        
         price = signal.price
         is_fast = signal.type == SignalType.FAST_BREAKOUT
         
@@ -548,10 +770,17 @@ class OrderRouter:
         base_size_usd = settings.max_trade_usd  # Use config value (default $5)
         size_usd = intelligence.get_position_size(base_size_usd, entry_score)
         
-        # Sync before order to get latest positions
+        # TRUTH CHECK: Validate system state before trading
+        if not self._validate_before_trade(symbol):
+            logger.error("[TRUTH] Pre-trade validation failed for %s", symbol)
+            self._record_rejection("truth", symbol, {"reason": "sync_failed"})
+            return None
+        
+        # Sync before order to get latest positions  
         if self._client and not is_test:
             try:
                 self.positions = sync_with_exchange(self._client, self.positions, quiet=True)
+                self._sync_position_stores()  # Keep registry in sync
             except Exception as e:
                 logger.warning("[ORDER] Pre-order sync failed: %s", e, exc_info=True)
         
@@ -576,22 +805,12 @@ class OrderRouter:
             self._record_rejection("limits", symbol, {"reason": "budget_exceeded"})
             return None
         
-        size_qty = size_usd / price
+        size_qty = size_usd / price if price else 0.0
         
-        # Check minimum order size (live mode)
-        if not settings.is_paper:
-            if not self._check_minimum(symbol, size_usd):
-                return None
-            # Check we have enough balance
-            if self._usd_balance < size_usd:
-                logger.info(
-                    "[ORDER] Insufficient balance: $%s < $%s",
-                    f"{self._usd_balance:.2f}",
-                    f"{size_usd:.2f}",
-                )
-                self._refresh_balance()  # Maybe stale
-                if self._usd_balance < size_usd:
-                    return None
+        can_execute, reason = self.executor.can_execute_order(size_usd, symbol)
+        if not can_execute:
+            logger.info("[ORDER] Cannot execute %s: %s", symbol, reason)
+            return None
         
         # Determine stops and targets based on mode
         # V2.1 geometry: 1.5% stop, 2.5% TP1 → R:R = 1.67
@@ -604,20 +823,20 @@ class OrderRouter:
         else:
             # Normal mode: ALWAYS use fixed percentages for profitable geometry
             # Signal values can be way too tight (0.1% stops!) which fees destroy
-            # Override with config values: 2.5% stop, 4% TP1, 7% TP2
-            stop_price = price * (1 - settings.fixed_stop_pct)
-            tp1_price = price * (1 + settings.tp1_pct)
-            tp2_price = price * (1 + settings.tp2_pct)
-            time_stop_min = settings.max_hold_minutes
+            # Override with config values from DI container
+            stop_price = price * (1 - self.config.fixed_stop_pct)
+            tp1_price = price * (1 + self.config.tp1_pct)
+            tp2_price = price * (1 + self.config.tp2_pct)
+            time_stop_min = getattr(settings, 'max_hold_minutes', 120)
             
             # Log if we're overriding different signal values
             signal_stop_pct = (price - signal.stop_price) / price * 100 if signal.stop_price else 0
-            if signal_stop_pct > 0 and signal_stop_pct < settings.fixed_stop_pct * 100 * 0.8:
+            if signal_stop_pct > 0 and signal_stop_pct < self.config.fixed_stop_pct * 100 * 0.8:
                 logger.info(
                     "[ORDER] %s override: signal stop %.2f%% → fixed %.1f%%",
                     symbol,
                     signal_stop_pct,
-                    settings.fixed_stop_pct * 100,
+                    self.config.fixed_stop_pct * 100,
                 )
         
         # Update signal object so dashboard shows correct values
@@ -633,12 +852,12 @@ class OrderRouter:
         if risk_per_share > 0:
             rr_ratio = reward_to_tp1 / risk_per_share
             # Skip R:R check in test profile
-            if not is_test and rr_ratio < settings.min_rr_ratio:
+            if not is_test and rr_ratio < self.config.min_rr_ratio:
                 logger.info(
                     "[ORDER] %s R:R too low: %.2f < %s (risk $%.4f, reward $%.4f)",
                     symbol,
                     rr_ratio,
-                    settings.min_rr_ratio,
+                    self.config.min_rr_ratio,
                     risk_per_share,
                     reward_to_tp1,
                 )
@@ -652,58 +871,52 @@ class OrderRouter:
             self._record_rejection("rr", symbol, {"reason": "invalid_stop"})
             return None
         
-        if settings.is_paper:
-            # Paper trade - simulate via paper executor
-            position = self.paper_executor.open_buy(
-                symbol=symbol,
-                price=price,
-                size_usd=size_usd,
-                stop_price=stop_price,
-                tp1_price=tp1_price,
-                tp2_price=tp2_price,
-                time_stop_min=time_stop_min,
-                strategy_id=getattr(signal, "strategy_id", "burst_flag"),
-            )
-            mode_label = "[FAST]" if is_fast else "[PAPER]"
-            logger.info(
-                "%s Opened LONG %s @ $%s, size $%s",
-                mode_label,
-                symbol,
-                f"{price:.4f}",
-                f"{size_usd:.2f}",
-            )
-            logger.info(
-                "Stop: $%s | TP1: $%s | TP2: $%s | Time: %sm",
-                f"{stop_price:.4f}",
-                f"{tp1_price:.4f}",
-                f"{tp2_price:.4f}",
-                time_stop_min,
-            )
-        else:
-            # CRITICAL: Set cooldown BEFORE order attempt to prevent duplicates!
-            self._order_cooldown[symbol] = datetime.now(timezone.utc)
-            
-            # Live trade - pass calculated stop/TP values (not original signal values)
-            # Use limit orders if configured (saves 0.6% per trade in fees!)
-            position = await self._execute_live_buy(
-                symbol=symbol, 
-                qty=size_qty, 
-                price=price, 
-                signal=signal,
-                stop_price=stop_price,      # V2.1 calculated
-                tp1_price=tp1_price,        # V2.1 calculated
-                tp2_price=tp2_price,        # V2.1 calculated
-                time_stop_min=time_stop_min,
-                use_limit=settings.use_limit_orders  # From config
-            )
-            if position is None:
-                # Even if order failed, keep cooldown to prevent hammering
-                return None
+        # Set cooldown BEFORE order attempt to prevent duplicates
+        self._order_cooldown[symbol] = datetime.now(timezone.utc)
+
+        position = await self.executor.open_position(
+            symbol=symbol,
+            size_usd=size_usd,
+            price=price,
+            stop_price=stop_price,
+            tp1_price=tp1_price,
+            tp2_price=tp2_price,
+        )
+
+        if position is None:
+            return None
+
+        position.time_stop_min = time_stop_min
+        mode_label = "[FAST]" if is_fast else f"[{self.mode.value.upper()}]"
+        logger.info(
+            "%s Opened LONG %s @ $%s, size $%s",
+            mode_label,
+            symbol,
+            f"{price:.4f}",
+            f"{size_usd:.2f}",
+        )
+        logger.info(
+            "Stop: $%s | TP1: $%s | TP2: $%s | Time: %sm",
+            f"{stop_price:.4f}",
+            f"{tp1_price:.4f}",
+            f"{tp2_price:.4f}",
+            time_stop_min,
+        )
         
+        # Add to both position stores (maintain compatibility)
+        self.position_registry.add_position(position)
         self.positions[symbol] = position
         
+        # Track strategy PnL attribution
+        self.pnl_engine.track_strategy_pnl(position.strategy_id, 0.0)  # Initial entry
+        
         # Persist immediately so dashboard and restarts see it
-        save_positions(self.positions)
+        self.persistence.save_positions(self.positions)
+        self._update_cached_balances()
+        
+        # TRUTH VERIFICATION: Verify position was actually created (in live mode)
+        if self.mode == TradingMode.LIVE:
+            asyncio.create_task(self._verify_position_created(symbol, size_qty))
         
         # Create thesis state for invalidation tracking
         try:
@@ -747,7 +960,7 @@ class OrderRouter:
             "symbol": signal.symbol,
             "strategy_id": getattr(signal, "strategy_id", "burst_flag"),
             "side": "buy",
-            "mode": settings.trading_mode,
+            "mode": self.mode.value,
             "entry_price": price,
             "size_usd": size_usd,
             "stop_price": stop_price,
@@ -786,7 +999,7 @@ class OrderRouter:
         })
         
         # Persist positions to disk
-        save_positions(self.positions)
+        self.persistence.save_positions(self.positions)
         
         # Send alert (non-blocking)
         asyncio.create_task(alert_trade_entry(
@@ -1024,7 +1237,7 @@ class OrderRouter:
             if position.stop_price < position.entry_price:
                 position.stop_price = position.entry_price * 1.001
                 logger.info("[REGIME] %s: BTC RISK_OFF - moving stop to BE", symbol)
-                save_positions(self.positions)
+                self.persistence.save_positions(self.positions)
         
         # If we're up trail_start%+, trail stop to lock in gains
         if pnl_pct >= trail_start:
@@ -1033,9 +1246,8 @@ class OrderRouter:
             if new_stop > position.stop_price:
                 old_stop = position.stop_price
                 position.stop_price = new_stop
-                # Update REAL stop order on exchange (paper mode skips this)
-                if not settings.is_paper:
-                    order_manager.update_stop_price(symbol, new_stop)
+                # Update REAL stop order on exchange (paper manager is no-op)
+                self.stop_manager.update_stop_price(symbol, new_stop)
                 logger.info(
                     "[TRAIL] %s: Stop raised $%s → $%s (lock %.1f%%)",
                     symbol,
@@ -1043,20 +1255,19 @@ class OrderRouter:
                     f"{new_stop:.4f}",
                     pnl_pct * trail_lock,
                 )
-                save_positions(self.positions)
+                self.persistence.save_positions(self.positions)
         
         # If we're up be_trigger%+, move stop to breakeven
         elif pnl_pct >= be_trigger and position.stop_price < position.entry_price:
             position.stop_price = position.entry_price * 1.001  # Tiny profit
-            # Update REAL stop order on exchange (paper mode skips this)
-            if not settings.is_paper:
-                order_manager.update_stop_price(symbol, position.stop_price)
+            # Update REAL stop order on exchange (paper manager is no-op)
+            self.stop_manager.update_stop_price(symbol, position.stop_price)
             logger.info(
                 "[TRAIL] %s: Stop moved to breakeven @ $%s",
                 symbol,
                 f"{position.stop_price:.4f}",
             )
-            save_positions(self.positions)
+            self.persistence.save_positions(self.positions)
         
         exit_reason = None
         exit_partial = False
@@ -1220,7 +1431,7 @@ class OrderRouter:
         close_qty = position.size_qty * settings.tp1_partial_pct
         close_usd = close_qty * price
         
-        if settings.is_paper:
+        if self.mode == TradingMode.PAPER:
             logger.info("[PAPER] Partial close %s @ $%s (%s)", position.symbol, f"{price:.4f}", reason)
         else:
             await self._execute_live_sell(position.symbol, close_qty)
@@ -1237,21 +1448,20 @@ class OrderRouter:
         position.stop_price = position.entry_price * 1.001
         
         # Update stop order on exchange with new qty and price
-        if not settings.is_paper:
-            # Cancel old stop and place new one with reduced qty
-            order_manager.cancel_stop_order(position.symbol)
-            order_manager.place_stop_order(
-                symbol=position.symbol,
-                qty=position.size_qty,  # Remaining qty
-                stop_price=position.stop_price
-            )
+        self.stop_manager.cancel_stop_order(position.symbol)
+        self.stop_manager.place_stop_order(
+            symbol=position.symbol,
+            qty=position.size_qty,  # Remaining qty
+            stop_price=position.stop_price
+        )
         
         logger.info(
             "Partial PnL: $%s, stop raised to breakeven $%s",
             f"{pnl:.2f}",
             f"{position.stop_price:.4f}",
         )
-        save_positions(self.positions)
+        self.persistence.save_positions(self.positions)
+        self._update_cached_balances()
         
         return None  # Position still open
     
@@ -1263,23 +1473,28 @@ class OrderRouter:
     ) -> TradeResult:
         """Close full position."""
         
-        if settings.is_paper:
+        if self.mode == TradingMode.PAPER:
             logger.info("[PAPER] Closed %s @ $%s (%s)", position.symbol, f"{price:.4f}", reason)
         else:
             # Cancel any stop order first to avoid double-sell
-            order_manager.cancel_stop_order(position.symbol)
+            self.stop_manager.cancel_stop_order(position.symbol)
             await self._execute_live_sell(position.symbol, position.size_qty)
         
-        # Calculate final PnL (including fees)
-        gross_pnl = (price - position.entry_price) * position.size_qty + position.realized_pnl
-        # Fees: entry uses maker if limit orders enabled, exit is taker (market sell)
-        entry_fee_rate = self.MAKER_FEE_PCT if settings.use_limit_orders else self.TAKER_FEE_PCT
-        entry_fee = position.entry_price * position.size_qty * entry_fee_rate
-        exit_fee = price * position.size_qty * self.TAKER_FEE_PCT
-        total_fees = entry_fee + exit_fee
-        pnl = gross_pnl - total_fees
-        fee_pct = (entry_fee_rate + self.TAKER_FEE_PCT) * 100
-        pnl_pct = ((price / position.entry_price) - 1) * 100 - fee_pct
+        # Calculate final PnL using PnLEngine (centralized, accurate)
+        pnl_breakdown = self.pnl_engine.calculate_trade_pnl(
+            entry_price=position.entry_price,
+            exit_price=price,
+            qty=position.size_qty,
+            side=position.side,
+            realized_pnl=position.realized_pnl
+        )
+        
+        # Extract values for backward compatibility
+        gross_pnl = pnl_breakdown.gross_pnl
+        total_fees = pnl_breakdown.total_fees
+        pnl = pnl_breakdown.net_pnl
+        pnl_pct = pnl_breakdown.pnl_pct
+        fee_pct = pnl_breakdown.fee_pct
         
         # Print fee breakdown
         fee_type = "limit+market" if settings.use_limit_orders else "market+market"
@@ -1307,10 +1522,16 @@ class OrderRouter:
         
         self.trade_history.append(result)
         
+        # Track strategy PnL attribution
+        if position.strategy_id:
+            self.pnl_engine.track_strategy_pnl(position.strategy_id, pnl)
+        
         # Don't count TEST trades in daily stats
         if not position.symbol.startswith("TEST"):
             self.daily_stats.record_trade(pnl)
         
+        # Remove from both position stores (maintain compatibility)
+        self.position_registry.remove_position(position.symbol)
         del self.positions[position.symbol]
         
         # Log ML training data for exit
@@ -1333,8 +1554,9 @@ class OrderRouter:
         ))
         
         # Update persistence
-        save_positions(self.positions)
-        clear_position(position.symbol)
+        self.persistence.save_positions(self.positions)
+        self.persistence.clear_position(position.symbol)
+        self._update_cached_balances()
         
         # Calculate R multiple (pnl / initial risk)
         initial_risk = position.entry_price - position.stop_price
@@ -1425,7 +1647,7 @@ class OrderRouter:
         Returns:
             Amount freed up in USD
         """
-        if settings.is_paper:
+        if self.mode == TradingMode.PAPER:
             logger.info("[REBALANCE] Not available in paper mode")
             return 0.0
         
@@ -1501,7 +1723,7 @@ class OrderRouter:
         Returns:
             TradeResult if successful
         """
-        if settings.is_paper or not self.positions:
+        if self.mode == TradingMode.PAPER or not self.positions:
             return None
         
         # Find largest position
@@ -1532,9 +1754,11 @@ class OrderRouter:
                 
                 if largest.size_usd < 5:
                     # Position dust, remove it
+                    self.position_registry.remove_position(largest.symbol)
                     del self.positions[largest.symbol]
                 
-                save_positions(self.positions)
+                self.persistence.save_positions(self.positions)
+                self._update_cached_balances()
                 logger.info("[TRIM] Done. %s now $%s", largest.symbol, f"{largest.size_usd:.0f}")
                 
                 return TradeResult(

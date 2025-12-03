@@ -58,6 +58,9 @@ def configure_common_monkeypatches(monkeypatch):
 
 
 async def run_path(mode: str, monkeypatch) -> tuple:
+    from tests.test_helpers import create_test_router_with_mocks
+    from core.mode_configs import TradingMode
+    
     price_holder = {"price": 100.0}
     orig_mode = settings.trading_mode
     orig_key = settings.coinbase_api_key
@@ -66,40 +69,24 @@ async def run_path(mode: str, monkeypatch) -> tuple:
     settings.coinbase_api_secret = ""
     settings.trading_mode = mode
     configure_common_monkeypatches(monkeypatch)
-    monkeypatch.setattr(OrderRouter, "_refresh_balance", lambda self: None)
 
-    # Build router with deterministic price getter
-    router = OrderRouter(get_price_func=lambda *_: price_holder["price"], state=None)
-    router._portfolio_value = 1000.0
-    router._usd_balance = 1000.0
+    # Create router with proper DI mocks and better R:R ratio
+    trading_mode = TradingMode.PAPER if mode == "paper" else TradingMode.LIVE
+    router = create_test_router_with_mocks(
+        mode=trading_mode,
+        balance=1000.0,
+        fixed_stop_pct=0.025,  # 2.5% stop for better R:R
+        tp1_pct=0.05,          # 5% TP1 for better R:R
+        min_rr_ratio=1.5       # Lower R:R requirement for tests
+    )
+    
+    # Override price function
+    router.get_price = lambda *_: price_holder["price"]
+    
+    # Mock truth sync to allow trades in test mode
+    router._validate_before_trade = lambda *_: True
 
-    signal = make_signal()
-
-    if mode == "live":
-        async def fake_live_buy(self, **kwargs):
-            return Position(
-                symbol=kwargs["symbol"],
-                side=Side.BUY,
-                entry_price=kwargs["price"],
-                entry_time=datetime.now(timezone.utc),
-                size_usd=kwargs["price"] * kwargs["qty"],
-                size_qty=kwargs["qty"],
-                stop_price=kwargs["stop_price"],
-                tp1_price=kwargs["tp1_price"],
-                tp2_price=kwargs["tp2_price"],
-                time_stop_min=kwargs["time_stop_min"],
-                state=PositionState.OPEN,
-            )
-
-        async def fake_live_sell(self, symbol: str, qty: float):
-            return None
-
-        monkeypatch.setattr(OrderRouter, "_execute_live_buy", fake_live_buy)
-        monkeypatch.setattr(OrderRouter, "_execute_live_sell", fake_live_sell)
-        monkeypatch.setattr(OrderRouter, "_init_live_client", lambda self: setattr(self, "_client", object()))
-        router._client = object()
-    else:
-        router._client = None
+    signal = make_signal(price=100.0, stop=97.5, tp1=105.0, tp2=107.0)  # Better R:R ratio
 
     position = await router.open_position(signal)
     assert position is not None

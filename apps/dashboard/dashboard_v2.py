@@ -126,8 +126,8 @@ class DashboardV2:
         top.append(" │ ")
         
         # Tier stats (compact)
-        warm = self.state.warm_symbols
-        cold = self.state.cold_symbols
+        warm = len(self.state.warm_symbols) if isinstance(self.state.warm_symbols, list) else self.state.warm_symbols
+        cold = len(self.state.cold_symbols) if isinstance(self.state.cold_symbols, list) else self.state.cold_symbols
         if cold > 0:
             top.append("Data: ", style="dim")
             top.append(f"{warm}✓/{cold}○", style="yellow")
@@ -590,9 +590,11 @@ class DashboardV2:
             lines.append(f"   [dim]Top:[/] {', '.join(top5)}")
         
         # Warm/Cold
-        warm_ok = self.state.warm_symbols >= 10
+        warm_count = len(self.state.warm_symbols) if isinstance(self.state.warm_symbols, list) else self.state.warm_symbols
+        cold_count = len(self.state.cold_symbols) if isinstance(self.state.cold_symbols, list) else self.state.cold_symbols
+        warm_ok = warm_count >= 10
         warm_status = "🟢" if warm_ok else "🟡"
-        lines.append(f"{warm_status} [dim]Warm:[/] {self.state.warm_symbols} | Cold: {self.state.cold_symbols}")
+        lines.append(f"{warm_status} [dim]Warm:[/] {warm_count} | Cold: {cold_count}")
         
         # Bot Budget
         budget = getattr(self.state, "bot_budget_usd", 0)
