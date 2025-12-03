@@ -1,9 +1,11 @@
 """Order routing with paper trading and live execution."""
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from datafeeds.universe import tier_scheduler
@@ -17,6 +19,7 @@ from core.models import Position, PositionState, Side, Signal, SignalType, Trade
 from core.pnl_engine import PnLEngine
 from core.position_registry import PositionRegistry
 import core.persistence as persistence_backend
+from core.persistence import sync_with_exchange
 from core.portfolio import PortfolioSnapshot, portfolio_tracker
 from core.trading_container import TradingContainer
 from core.trading_interfaces import (
@@ -25,6 +28,7 @@ from core.trading_interfaces import (
     IPositionPersistence,
     IStopOrderManager,
 )
+from core.events import OrderEvent
 from execution.order_manager import order_manager
 from execution.order_utils import (
     OrderFatalError,
@@ -124,6 +128,113 @@ class DailyStats:
         return min(100.0, abs(self.total_pnl) / settings.daily_max_loss_usd * 100)
 
 
+@dataclass
+class CircuitBreaker:
+    """
+    Circuit breaker that pauses trading after consecutive API failures.
+    
+    States:
+    - CLOSED: Normal operation, trades allowed
+    - OPEN: Too many failures, trades blocked
+    - HALF_OPEN: Testing if API recovered (allows 1 trade)
+    """
+    max_consecutive_failures: int = settings.circuit_breaker_max_failures
+    reset_after_seconds: int = settings.circuit_breaker_reset_seconds
+    
+    consecutive_failures: int = 0
+    last_failure_time: Optional[datetime] = None
+    state: str = "closed"  # closed, open, half_open
+    
+    def record_success(self):
+        """API call succeeded - reset failure count."""
+        self.consecutive_failures = 0
+        self.state = "closed"
+        self.last_failure_time = None
+    
+    def record_failure(self):
+        """API call failed - increment counter and potentially trip breaker."""
+        self.consecutive_failures += 1
+        self.last_failure_time = datetime.now(timezone.utc)
+        
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            self.state = "open"
+            logger.error(
+                "[CIRCUIT] Breaker OPEN after %d consecutive failures - blocking trades for %ds",
+                self.consecutive_failures,
+                self.reset_after_seconds,
+            )
+    
+    def can_trade(self) -> bool:
+        """Check if trading is allowed."""
+        if self.state == "closed":
+            return True
+        
+        if self.state == "open":
+            # Check if enough time has passed to try again
+            if self.last_failure_time:
+                elapsed = (datetime.now(timezone.utc) - self.last_failure_time).total_seconds()
+                if elapsed >= self.reset_after_seconds:
+                    self.state = "half_open"
+                    logger.info("[CIRCUIT] Breaker HALF-OPEN - allowing test trade")
+                    return True
+            return False
+        
+        # half_open: allow one trade to test
+        return True
+    
+    @property
+    def is_tripped(self) -> bool:
+        return self.state == "open"
+
+
+class CooldownPersistence:
+    """Persists order cooldowns to survive restarts."""
+    
+    def __init__(self, mode: TradingMode):
+        prefix = "paper" if mode == TradingMode.PAPER else "live"
+        self.file_path = Path(f"data/{prefix}_cooldowns.json")
+    
+    def save(self, cooldowns: dict[str, datetime]) -> None:
+        """Save cooldowns to disk."""
+        try:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            data = {sym: ts.isoformat() for sym, ts in cooldowns.items()}
+            with open(self.file_path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning("[COOLDOWN] Failed to save cooldowns: %s", e)
+    
+    def load(self) -> dict[str, datetime]:
+        """Load cooldowns from disk, filtering out expired ones."""
+        if not self.file_path.exists():
+            return {}
+        
+        try:
+            with open(self.file_path, "r") as f:
+                data = json.load(f)
+            
+            cooldowns = {}
+            now = datetime.now(timezone.utc)
+            cooldown_seconds = settings.order_cooldown_seconds
+            
+            for sym, ts_str in data.items():
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                
+                # Only keep if not expired
+                if (now - ts).total_seconds() < cooldown_seconds:
+                    cooldowns[sym] = ts
+            
+            if cooldowns:
+                logger.info("[COOLDOWN] Loaded %d active cooldowns from disk", len(cooldowns))
+            return cooldowns
+            
+        except Exception as e:
+            logger.warning("[COOLDOWN] Failed to load cooldowns: %s", e)
+            return {}
+
+
 class OrderRouter:
     """Handles order execution in paper or live mode."""
     
@@ -153,6 +264,7 @@ class OrderRouter:
         persistence: IPositionPersistence | None = None,
         stop_manager: IStopOrderManager | None = None,
         config=None,
+        event_bus=None,
     ):
         """
         Args:
@@ -167,6 +279,7 @@ class OrderRouter:
         self.portfolio = portfolio or self.container.get_portfolio_manager()
         self.persistence = persistence or self.container.get_persistence()
         self.stop_manager = stop_manager or self.container.get_stop_manager()
+        self.event_bus = event_bus
 
         # Initialize new unified components (keeping existing interface)
         self.pnl_engine = PnLEngine(self.config)
@@ -180,12 +293,23 @@ class OrderRouter:
         self._product_info: dict[str, dict] = {}  # Cache product minimums
         self._usd_balance: float = 0.0
         self._order_cooldown: dict[str, datetime] = {}  # Prevent duplicate orders
-        self._cooldown_seconds = 1800  # 30 minute cooldown per symbol
+        self._cooldown_seconds = settings.order_cooldown_seconds
         self._in_flight: set[str] = set()  # Symbols with orders in progress (race condition prevention)
         self._symbol_exposure: dict[str, float] = {}  # Track total exposure per symbol
         self._portfolio_value: float = 0.0  # Tracked portfolio value
         self._exchange_holdings: dict[str, float] = {}  # Actual holdings from exchange
         self._portfolio_snapshot: Optional[PortfolioSnapshot] = None  # Real portfolio from Coinbase
+        self._last_snapshot_at: Optional[datetime] = None  # Timestamp of last portfolio snapshot
+        self._sync_degraded: bool = False  # If True, block new entries until snapshot succeeds
+        self._last_stop_check: dict[str, datetime] = {}  # Rate-limit stop health checks
+        self._recently_closed: dict[str, datetime] = {}  # Prevent re-adding positions we just closed
+        
+        # Circuit breaker for API failures
+        self._circuit_breaker = CircuitBreaker()
+        
+        # Persistent cooldowns (survives restarts)
+        self._cooldown_persistence = CooldownPersistence(self.mode)
+        self._order_cooldown = self._cooldown_persistence.load()
 
         if hasattr(self.stop_manager, "bind_client") and self._client:
             try:
@@ -213,6 +337,10 @@ class OrderRouter:
             order_manager.init_client(self._client)
             order_manager.sync_with_exchange()
             self.positions = persistence_backend.sync_with_exchange(self._client, self.positions, quiet=False)
+            # Sync exchange positions to registry (ensures both stores match)
+            for symbol, position in self.positions.items():
+                if symbol not in self.position_registry.get_all_positions():
+                    self.position_registry.add_position(position)
             total_cost = sum(p.cost_basis for p in self.positions.values())
             total_value = sum(p.size_usd for p in self.positions.values())
             logger.info(
@@ -243,53 +371,62 @@ class OrderRouter:
             return True  # Paper mode always in sync
         
         try:
-            # Get fresh exchange snapshot
-            if hasattr(self.portfolio, 'get_snapshot'):
+            snapshot = None
+            # Prefer fresh cached snapshot to avoid repeated API hits
+            if self._snapshot_is_fresh():
+                snapshot = self._portfolio_snapshot
+            elif hasattr(self.portfolio, "get_snapshot"):
                 snapshot = self.portfolio.get_snapshot()
-                if not snapshot:
-                    logger.warning("[TRUTH] Could not get exchange snapshot")
-                    return False
+                if snapshot:
+                    self._portfolio_snapshot = snapshot
+                    self._last_snapshot_at = datetime.now(timezone.utc)
+                    self._sync_degraded = False
+            if not snapshot:
+                logger.warning("[TRUTH] Could not get exchange snapshot")
+                self._sync_degraded = True
+                return False
+            
+            # Compare positions
+            exchange_positions = {
+                pos.symbol: pos for pos in snapshot.positions.values() 
+                if not pos.is_cash and pos.value_usd >= settings.position_min_usd
+            }
+            
+            local_symbols = set(self.positions.keys())
+            exchange_symbols = set(exchange_positions.keys())
+            
+            # Check for drift
+            missing_local = exchange_symbols - local_symbols
+            extra_local = local_symbols - exchange_symbols
+            
+            if missing_local or extra_local:
+                logger.error(
+                    "[TRUTH] Position drift detected! Missing local: %s, Extra local: %s",
+                    missing_local, extra_local
+                )
                 
-                # Compare positions
-                exchange_positions = {
-                    pos.symbol: pos for pos in snapshot.positions.values() 
-                    if not pos.is_cash and pos.value_usd >= 1.0
-                }
+                # Attempt automatic reconciliation
+                return self._recover_from_drift(exchange_positions)
+            
+            # Verify quantities for existing positions
+            for symbol in local_symbols & exchange_symbols:
+                local_pos = self.positions[symbol]
+                exchange_pos = exchange_positions[symbol]
                 
-                local_symbols = set(self.positions.keys())
-                exchange_symbols = set(exchange_positions.keys())
-                
-                # Check for drift
-                missing_local = exchange_symbols - local_symbols
-                extra_local = local_symbols - exchange_symbols
-                
-                if missing_local or extra_local:
-                    logger.error(
-                        "[TRUTH] Position drift detected! Missing local: %s, Extra local: %s",
-                        missing_local, extra_local
+                # Allow small differences due to rounding
+                qty_diff = abs(local_pos.size_qty - exchange_pos.qty)
+                if qty_diff > settings.position_qty_drift_tolerance:
+                    logger.warning(
+                        "[TRUTH] Quantity drift for %s: Local=%.8f, Exchange=%.8f",
+                        symbol, local_pos.size_qty, exchange_pos.qty
                     )
-                    
-                    # Attempt automatic reconciliation
-                    return self._recover_from_drift(exchange_positions)
-                
-                # Verify quantities for existing positions
-                for symbol in local_symbols & exchange_symbols:
-                    local_pos = self.positions[symbol]
-                    exchange_pos = exchange_positions[symbol]
-                    
-                    # Allow small differences due to rounding
-                    qty_diff = abs(local_pos.size_qty - exchange_pos.qty)
-                    if qty_diff > 0.00001:  # More than 1/100,000th difference
-                        logger.warning(
-                            "[TRUTH] Quantity drift for %s: Local=%.8f, Exchange=%.8f",
-                            symbol, local_pos.size_qty, exchange_pos.qty
-                        )
-                
-                logger.debug("[TRUTH] Exchange sync verified ✓")
-                return True
-                
+            
+            logger.debug("[TRUTH] Exchange sync verified ✓")
+            return True
+            
         except Exception as e:
             logger.error("[TRUTH] Exchange verification failed: %s", e)
+            self._sync_degraded = True
             return False
     
     def _recover_from_drift(self, exchange_positions: dict) -> bool:
@@ -303,7 +440,7 @@ class OrderRouter:
             
             # Rebuild from exchange truth
             for symbol, exchange_pos in exchange_positions.items():
-                if exchange_pos.value_usd >= 1.0:  # Only significant positions
+                if exchange_pos.value_usd >= settings.position_min_usd:
                     
                     # Create position from exchange data
                     from core.models import Position, Side
@@ -315,9 +452,9 @@ class OrderRouter:
                         entry_time=datetime.now(timezone.utc),  # Unknown, use now
                         size_usd=exchange_pos.value_usd,
                         size_qty=exchange_pos.qty,
-                        stop_price=exchange_pos.entry_price * 0.95,  # Conservative stop
-                        tp1_price=exchange_pos.entry_price * 1.05,   # Conservative TP
-                        tp2_price=exchange_pos.entry_price * 1.10,
+                        stop_price=exchange_pos.entry_price * (1 - settings.fixed_stop_pct),
+                        tp1_price=exchange_pos.entry_price * (1 + settings.tp1_pct),
+                        tp2_price=exchange_pos.entry_price * (1 + settings.tp2_pct),
                         entry_cost_usd=exchange_pos.cost_basis,
                         strategy_id="recovered"  # Mark as recovered
                     )
@@ -339,10 +476,31 @@ class OrderRouter:
     def _validate_before_trade(self, symbol: str) -> bool:
         """Validate system state before placing any trade."""
         
-        # Check exchange sync
+        # If we recently failed to sync truth, try to recover but don't block forever
+        if self.mode == TradingMode.LIVE and self._sync_degraded:
+            # Try to refresh portfolio one more time
+            try:
+                self._update_balance_cache()
+            except Exception:
+                pass
+            
+            # If still degraded but we have SOME positions data, allow with warning
+            if self._sync_degraded and self._portfolio_value > 100:
+                logger.warning("[TRUTH] Sync degraded but allowing trade (portfolio=$%.0f)", self._portfolio_value)
+                self._sync_degraded = False  # Reset to allow trading
+            elif self._sync_degraded:
+                logger.info("[TRUTH] Trading paused - no valid portfolio data")
+                self._record_rejection("truth", symbol, {"reason": "sync_degraded"})
+                return False
+        
+        # Check exchange sync - but don't block if we have valid local state
         if not self._verify_exchange_truth():
-            logger.error("[TRUTH] Cannot trade - exchange sync failed")
-            return False
+            # If we have positions and portfolio value, allow trading with warning
+            if len(self.positions) > 0 and self._portfolio_value > 100:
+                logger.warning("[TRUTH] Exchange sync failed but local state valid - allowing trade")
+            else:
+                logger.error("[TRUTH] Cannot trade - exchange sync failed and no local state")
+                return False
         
         # Verify we have current price data
         current_price = self.get_price(symbol)
@@ -355,7 +513,7 @@ class OrderRouter:
             snapshot = self.portfolio.get_snapshot()
             if snapshot:
                 exchange_position = snapshot.positions.get(symbol)
-                if exchange_position and exchange_position.value_usd >= 1.0:
+                if exchange_position and exchange_position.value_usd >= settings.position_min_usd:
                     logger.warning("[TRUTH] %s position already exists on exchange", symbol)
                     return False
         
@@ -366,17 +524,15 @@ class OrderRouter:
         await asyncio.sleep(2)  # Give exchange time to update
         
         try:
-            if hasattr(self.portfolio, 'get_snapshot'):
+            if self.mode == TradingMode.LIVE and hasattr(self.portfolio, 'get_snapshot'):
                 snapshot = self.portfolio.get_snapshot()
                 if snapshot:
                     exchange_position = snapshot.positions.get(symbol)
-                    if exchange_position and exchange_position.qty >= expected_qty * 0.95:  # 5% tolerance
+                    if exchange_position and exchange_position.qty >= expected_qty * settings.position_verify_tolerance:
                         logger.info("[TRUTH] ✓ Position verified on exchange: %s %.6f", 
                                   symbol, exchange_position.qty)
                     else:
-                        logger.error("[TRUTH] ❌ Position NOT found on exchange: %s (expected %.6f)", 
-                                   symbol, expected_qty)
-                        
+                        logger.warning("[TRUTH] ⚠ Position NOT found on exchange: %s", symbol)
                         # Mark position as problematic
                         if symbol in self.positions:
                             self.positions[symbol].strategy_id += "_UNVERIFIED"
@@ -416,13 +572,12 @@ class OrderRouter:
                     usd_bal = value
                 elif currency == 'USDC':
                     usdc_bal = value
-                elif value > 0.0001:
+                elif value > settings.position_dust_usd:
                     # Estimate value of holdings and track them
                     symbol = f"{currency}-USD"
                     
-                    # Skip delisted coins (avoid 404 errors)
-                    DELISTED = {'BOND-USD', 'NU-USD', 'CLV-USD', 'SNX-USD'}
-                    if symbol in DELISTED:
+                    # Skip ignored/delisted coins (avoid 404 errors)
+                    if symbol in settings.ignored_symbol_set:
                         continue
                     
                     try:
@@ -431,21 +586,27 @@ class OrderRouter:
                         position_value = value * price
                         holdings_value += position_value
                         # Track for blocking new buys
-                        if position_value >= 1.0:  # Ignore dust
+                        if position_value >= settings.position_min_usd:
                             self._exchange_holdings[symbol] = position_value
-                    except:
-                        pass
+                    except Exception as e:
+                        logger.warning("[ORDER] Failed to value holding %s: %s", symbol, e, exc_info=True)
+                        self._sync_degraded = True
             
             # Calculate totals
             self._usd_balance = usd_bal + usdc_bal
             self._portfolio_value = self._usd_balance + holdings_value
             
-            # Fallback: if portfolio seems too low, use estimate
-            # (API sometimes doesn't return USD fiat balance)
+            # Require a believable balance; if missing, pause new entries
             if self._portfolio_value < 50:
-                logger.warning("[ORDER] API balance low ($%s), using fallback", f"{self._portfolio_value:.2f}")
-                self._portfolio_value = 500.0  # Conservative estimate
-                self._usd_balance = 450.0  # Most is cash
+                logger.error(
+                    "[ORDER] API balance low ($%s) - marking sync degraded and blocking new trades",
+                    f"{self._portfolio_value:.2f}",
+                )
+                self._sync_degraded = True
+                return
+            else:
+                # Balance looks sane again
+                self._sync_degraded = False
             
             logger.info(
                 "[ORDER] Portfolio: $%s (Cash: $%s, Holdings: $%s)",
@@ -453,12 +614,13 @@ class OrderRouter:
                 f"{self._usd_balance:.2f}",
                 f"{holdings_value:.2f}",
             )
-            logger.info("[ORDER] Trade size: $10.00 (fixed)")
             
             # Get REAL portfolio snapshot from Coinbase Portfolio API
             try:
                 self._portfolio_snapshot = portfolio_tracker.get_snapshot()
                 if self._portfolio_snapshot:
+                    self._last_snapshot_at = datetime.now(timezone.utc)
+                    self._sync_degraded = False
                     logger.info(
                         "[ORDER] Real P&L: $%s (%s positions)",
                         f"{self._portfolio_snapshot.total_unrealized_pnl:+.2f}",
@@ -469,6 +631,7 @@ class OrderRouter:
                 
         except Exception as e:
             logger.error("[ORDER] Balance check failed: %s", e, exc_info=True)
+            self._sync_degraded = True
     
     def _get_product_info(self, symbol: str) -> dict:
         """Get product minimums (cached)."""
@@ -525,6 +688,46 @@ class OrderRouter:
             self._exchange_holdings = getattr(self.portfolio, "exchange_holdings", self._exchange_holdings)
         except Exception:
             pass
+
+    def _snapshot_is_fresh(self, max_age_seconds: int = 10) -> bool:
+        """Check if we have a recent portfolio snapshot."""
+        if not self._portfolio_snapshot or not self._last_snapshot_at:
+            return False
+        age = (datetime.now(timezone.utc) - self._last_snapshot_at).total_seconds()
+        return age <= max_age_seconds
+
+    def _emit_order_event(
+        self,
+        event_type: str,
+        position: Position,
+        price: float,
+        reason: str = "",
+        pnl: float = 0.0,
+        pnl_pct: float = 0.0,
+        size_usd: float | None = None,
+        size_qty: float | None = None,
+    ) -> None:
+        """Emit a normalized order event for downstream consumers."""
+        if not self.event_bus:
+            return
+        try:
+            evt = OrderEvent(
+                event_type=event_type,
+                symbol=position.symbol,
+                side=position.side,
+                mode=self.mode.value if isinstance(self.mode, TradingMode) else str(self.mode),
+                strategy_id=getattr(position, "strategy_id", "") or "",
+                price=price,
+                size_usd=size_usd if size_usd is not None else position.size_usd,
+                size_qty=size_qty if size_qty is not None else position.size_qty,
+                reason=reason,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                ts=datetime.now(timezone.utc),
+            )
+            self.event_bus.emit_order(evt)
+        except Exception:
+            logger.debug("[EVENT] Failed to emit order event for %s", position.symbol, exc_info=True)
 
     def _cancel_order(self, order_id: str):
         """Best-effort cancel for unfilled orders."""
@@ -601,13 +804,18 @@ class OrderRouter:
             logger.info("[ORDER] Daily loss limit reached, skipping trade")
             return None
         
-        # Check max positions (skip in test profile)
+        # Circuit breaker check - block trades if API is failing
+        if not self._circuit_breaker.can_trade():
+            logger.warning("[ORDER] Circuit breaker OPEN - blocking trade for %s", symbol)
+            self._record_rejection("circuit_breaker", symbol)
+            return None
+        
+        # Check max positions (soft limit - exposure is the real limit)
         from core.profiles import is_test_profile
         is_test = is_test_profile(settings.profile)
         if not is_test and len(self.positions) >= settings.max_positions:
-            logger.info("[ORDER] Max positions (%s) reached", settings.max_positions)
-            self._record_rejection("limits", symbol, {"reason": "max_positions"})
-            return None
+            logger.debug("[ORDER] Soft position limit (%s) reached, checking exposure", settings.max_positions)
+            # Don't block - exposure budget check below will handle it
         
         # Accept both FLAG_BREAKOUT and FAST_BREAKOUT
         if signal.type not in [SignalType.FLAG_BREAKOUT, SignalType.FAST_BREAKOUT]:
@@ -636,11 +844,11 @@ class OrderRouter:
             self._record_rejection("limits", symbol, {"reason": "already_holding"})
             return None
         
-        # Check cooldown to prevent duplicate orders (30 min for normal, 5 min minimum for just-ordered)
+        # Check cooldown to prevent duplicate orders
         symbol = signal.symbol
         if symbol in self._order_cooldown:
             elapsed = (datetime.now(timezone.utc) - self._order_cooldown[symbol]).total_seconds()
-            min_cooldown = 300  # 5 minute MINIMUM cooldown after any order attempt
+            min_cooldown = settings.order_cooldown_min_seconds
             if elapsed < min_cooldown:
                 logger.info(
                     "[ORDER] %s on hard cooldown (%ss remaining)",
@@ -751,6 +959,13 @@ class OrderRouter:
             ", ".join(entry_score.reasons[:2]),
         )
         
+        # Daily loss limit check
+        is_halted, halt_reason = intelligence.is_trading_halted()
+        if is_halted:
+            logger.warning("[RISK] Trading halted: %s", halt_reason)
+            self._record_rejection("risk", symbol, {"reason": "daily_loss_limit"})
+            return None
+        
         # New position limits check using registry 
         # Use the calculated size_usd that will be determined later
         estimated_size_usd = settings.max_trade_usd  # Conservative estimate
@@ -766,9 +981,53 @@ class OrderRouter:
         price = signal.price
         is_fast = signal.type == SignalType.FAST_BREAKOUT
         
-        # Fixed position size - small for testing, allows more positions
-        base_size_usd = settings.max_trade_usd  # Use config value (default $5)
-        size_usd = intelligence.get_position_size(base_size_usd, entry_score)
+        # Dynamic position sizing based on portfolio and confidence
+        # Get portfolio value for sizing
+        pv = self._portfolio_value
+        if self._portfolio_snapshot:
+            pv = self._portfolio_snapshot.total_value
+        if pv <= 0:
+            pv = 500.0  # Fallback
+        
+        # TIERED SIZING: Bet big on best setups, small on others
+        confluence_count = getattr(signal, 'confluence_count', 1)
+        score = entry_score.total_score if hasattr(entry_score, 'total_score') else entry_score
+        
+        # Count current position tiers
+        whale_threshold = settings.whale_trade_usd * 0.8  # 80% of whale size
+        strong_threshold = settings.strong_trade_usd * 0.8
+        whale_count = sum(1 for p in self.positions.values() 
+                         if getattr(p, 'entry_cost_usd', 0) >= whale_threshold)
+        strong_count = sum(1 for p in self.positions.values() 
+                          if strong_threshold <= getattr(p, 'entry_cost_usd', 0) < whale_threshold)
+        
+        # Determine tier based on score + confluence (all from config)
+        is_whale = score >= settings.whale_score_min and confluence_count >= settings.whale_confluence_min
+        is_strong = score >= settings.strong_score_min or confluence_count >= settings.whale_confluence_min
+        
+        if is_whale and whale_count < settings.whale_max_positions:
+            size_usd = settings.whale_trade_usd
+            tier = "🐋 WHALE"
+        elif is_strong and strong_count < settings.strong_max_positions:
+            size_usd = settings.strong_trade_usd
+            tier = "💪 STRONG"
+        else:
+            size_usd = settings.normal_trade_usd
+            tier = "📊 NORMAL"
+        
+        logger.info("[TIER] %s: %s bet $%.0f (score:%d, confluence:%d)", 
+                   symbol, tier, size_usd, score, confluence_count)
+        
+        # Apply time-of-day multiplier (reduce in dead zones)
+        session_mult = intelligence.get_size_multiplier()
+        if session_mult < 1.0:
+            logger.info("[TIME] Dead zone - reducing size by %.0f%%", (1 - session_mult) * 100)
+            size_usd *= session_mult
+        
+        # Clamp to portfolio limits
+        min_size = pv * settings.position_min_pct
+        max_size = pv * settings.position_max_pct
+        size_usd = max(min_size, min(max_size, size_usd))
         
         # TRUTH CHECK: Validate system state before trading
         if not self._validate_before_trade(symbol):
@@ -780,6 +1039,17 @@ class OrderRouter:
         if self._client and not is_test:
             try:
                 self.positions = sync_with_exchange(self._client, self.positions, quiet=True)
+                # Filter out recently closed positions (5 min grace period for sells to settle)
+                now = datetime.now(timezone.utc)
+                for sym in list(self.positions.keys()):
+                    if sym in self._recently_closed:
+                        closed_at = self._recently_closed[sym]
+                        if (now - closed_at).total_seconds() < 300:  # 5 min
+                            del self.positions[sym]
+                            logger.debug("[SYNC] Skipping recently closed: %s", sym)
+                        else:
+                            # Grace period expired, remove from cache
+                            del self._recently_closed[sym]
                 self._sync_position_stores()  # Keep registry in sync
             except Exception as e:
                 logger.warning("[ORDER] Pre-order sync failed: %s", e, exc_info=True)
@@ -844,8 +1114,7 @@ class OrderRouter:
         signal.tp1_price = tp1_price
         signal.tp2_price = tp2_price
         
-        # TODO-LOGIC-1: Enforce minimum R:R ratio (risk to TP1)
-        # This ensures average winner > average loser for compounding
+        # Enforce minimum R:R ratio (risk to TP1)
         risk_per_share = price - stop_price
         reward_to_tp1 = tp1_price - price
         
@@ -873,6 +1142,7 @@ class OrderRouter:
         
         # Set cooldown BEFORE order attempt to prevent duplicates
         self._order_cooldown[symbol] = datetime.now(timezone.utc)
+        self._cooldown_persistence.save(self._order_cooldown)
 
         position = await self.executor.open_position(
             symbol=symbol,
@@ -935,6 +1205,7 @@ class OrderRouter:
         
         # Set cooldown to prevent duplicate orders
         self._order_cooldown[symbol] = datetime.now(timezone.utc)
+        self._cooldown_persistence.save(self._order_cooldown)
         
         # Record trade for global cooldown
         intelligence.record_trade()
@@ -1000,6 +1271,16 @@ class OrderRouter:
         
         # Persist positions to disk
         self.persistence.save_positions(self.positions)
+
+        # Emit normalized order event
+        self._emit_order_event(
+            event_type="open",
+            position=position,
+            price=position.entry_price,
+            reason=signal.reason,
+            size_usd=position.size_usd,
+            size_qty=position.size_qty,
+        )
         
         # Send alert (non-blocking)
         asyncio.create_task(alert_trade_entry(
@@ -1078,6 +1359,7 @@ class OrderRouter:
                 })
                 
                 if result.success:
+                    self._circuit_breaker.record_success()
                     break  # Success, exit retry loop
                 else:
                     raise Exception(result.error or "Order failed")
@@ -1101,6 +1383,7 @@ class OrderRouter:
         
         if order is None:
             logger.error("[LIVE] Failed after %s attempts: %s", max_retries, last_error)
+            self._circuit_breaker.record_failure()
             return None
         
         try:
@@ -1152,7 +1435,13 @@ class OrderRouter:
                 if stop_order_id:
                     logger.info("[LIVE] Real stop-loss on exchange @ $%s", f"{adjusted_stop:.4f}")
                 else:
-                    logger.warning("[LIVE] Stop order failed - position unprotected!")
+                    logger.error("[LIVE] Stop order failed - unwinding position to avoid unprotected exposure")
+                    try:
+                        await self._execute_live_sell(symbol, fill_qty)
+                    except Exception as sell_error:
+                        logger.critical("[LIVE] Failed to unwind unprotected position: %s", sell_error, exc_info=True)
+                    self._record_rejection("stop_failure", symbol, {"order_id": result.order_id})
+                    return None
                 
                 # Adjust TPs relative to fill price too
                 if fill_price != price and price > 0:
@@ -1211,6 +1500,10 @@ class OrderRouter:
     async def check_exits(self, symbol: str) -> Optional[TradeResult]:
         """Check if position should exit with smart trailing stops."""
         
+        # Skip recently closed positions (prevents exit loop spam)
+        if symbol in self._recently_closed:
+            return None
+        
         position = self.positions.get(symbol)
         if position is None:
             return None
@@ -1218,6 +1511,27 @@ class OrderRouter:
         current_price = self.get_price(symbol)
         if current_price <= 0:
             return None
+
+        # Stop-loss sanity: ensure an active exchange stop exists for live positions
+        if self.mode == TradingMode.LIVE and position.stop_price:
+            now = datetime.now(timezone.utc)
+            last_check = self._last_stop_check.get(symbol)
+            if not last_check or (now - last_check).total_seconds() > settings.stop_health_check_interval:
+                self._last_stop_check[symbol] = now
+                if not order_manager.has_stop_order(symbol):
+                    placed_id = order_manager.place_stop_order(
+                        symbol=symbol,
+                        qty=position.size_qty,
+                        stop_price=position.stop_price,
+                    )
+                    if placed_id:
+                        logger.warning(
+                            "[LIVE] Re-armed missing stop for %s @ $%s",
+                            symbol,
+                            f"{position.stop_price:.4f}",
+                        )
+                    else:
+                        logger.error("[LIVE] Missing stop for %s and failed to re-arm", symbol)
         
         # Calculate current profit
         pnl_pct = ((current_price / position.entry_price) - 1) * 100
@@ -1345,6 +1659,17 @@ class OrderRouter:
             except Exception:
                 pass  # Thesis check is optional
         
+        # Check very weak confidence - exit plays that have degraded significantly
+        if exit_reason is None and position.current_confidence < 15:
+            # Only exit if we're not in a strong profit
+            if pnl_pct < 3.0:  # If less than 3% profit, exit weak play
+                exit_reason = f"weak_confidence: {position.current_confidence:.0f}%"
+                logger.info(
+                    "[WEAK] %s: Confidence degraded to %.0f%% - exiting to free capital",
+                    symbol,
+                    position.current_confidence,
+                )
+        
         # Check time stop - but only if enabled and in profit or small loss
         # DISABLED by default (time_stop_enabled=False) - positions exit on TP/stop/thesis only
         elif settings.time_stop_enabled and position.time_stop_min and position.hold_duration_minutes() >= position.time_stop_min:
@@ -1404,9 +1729,11 @@ class OrderRouter:
                 elif pnl_pct < -1.5:  # Losing
                     conf -= 15
                 
-                # Adjust based on ML score change
-                ml_delta = position.ml_score_current - position.ml_score_entry
-                conf += ml_delta * 20  # ML score is -1 to 1, so *20 = -20 to +20
+                # Adjust based on ML score change (only for bot-opened positions)
+                # Synced positions have ml_score_entry=0, so skip ML penalty for them
+                if position.ml_score_entry != 0:
+                    ml_delta = position.ml_score_current - position.ml_score_entry
+                    conf += ml_delta * 20  # ML score is -1 to 1, so *20 = -20 to +20
                 
                 # Clamp to 0-100
                 position.current_confidence = max(0, min(100, conf))
@@ -1430,14 +1757,18 @@ class OrderRouter:
         
         close_qty = position.size_qty * settings.tp1_partial_pct
         close_usd = close_qty * price
+        closed_cost = close_qty * position.entry_price if position.entry_price else 0.0
+        
+        # Calculate partial PnL first (need it for paper credit)
+        pnl = (price - position.entry_price) * close_qty
         
         if self.mode == TradingMode.PAPER:
             logger.info("[PAPER] Partial close %s @ $%s (%s)", position.symbol, f"{price:.4f}", reason)
+            # Credit paper balance: return closed portion + PnL
+            if hasattr(self.portfolio, 'credit'):
+                self.portfolio.credit(close_usd + pnl)
         else:
             await self._execute_live_sell(position.symbol, close_qty)
-        
-        # Calculate partial PnL
-        pnl = (price - position.entry_price) * close_qty
         position.realized_pnl += pnl
         position.partial_closed = True
         position.size_qty -= close_qty
@@ -1462,6 +1793,19 @@ class OrderRouter:
         )
         self.persistence.save_positions(self.positions)
         self._update_cached_balances()
+
+        # Emit normalized partial close event
+        pnl_pct = (pnl / closed_cost * 100) if closed_cost > 0 else 0.0
+        self._emit_order_event(
+            event_type="partial_close",
+            position=position,
+            price=price,
+            reason=reason,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            size_usd=close_usd,
+            size_qty=close_qty,
+        )
         
         return None  # Position still open
     
@@ -1473,13 +1817,6 @@ class OrderRouter:
     ) -> TradeResult:
         """Close full position."""
         
-        if self.mode == TradingMode.PAPER:
-            logger.info("[PAPER] Closed %s @ $%s (%s)", position.symbol, f"{price:.4f}", reason)
-        else:
-            # Cancel any stop order first to avoid double-sell
-            self.stop_manager.cancel_stop_order(position.symbol)
-            await self._execute_live_sell(position.symbol, position.size_qty)
-        
         # Calculate final PnL using PnLEngine (centralized, accurate)
         pnl_breakdown = self.pnl_engine.calculate_trade_pnl(
             entry_price=position.entry_price,
@@ -1488,6 +1825,16 @@ class OrderRouter:
             side=position.side,
             realized_pnl=position.realized_pnl
         )
+        
+        if self.mode == TradingMode.PAPER:
+            logger.info("[PAPER] Closed %s @ $%s (%s)", position.symbol, f"{price:.4f}", reason)
+            # Credit paper balance: return cost basis + net PnL
+            if hasattr(self.portfolio, 'credit'):
+                self.portfolio.credit(position.size_usd + pnl_breakdown.net_pnl)
+        else:
+            # Cancel any stop order first to avoid double-sell
+            self.stop_manager.cancel_stop_order(position.symbol)
+            await self._execute_live_sell(position.symbol, position.size_qty)
         
         # Extract values for backward compatibility
         gross_pnl = pnl_breakdown.gross_pnl
@@ -1533,6 +1880,9 @@ class OrderRouter:
         # Remove from both position stores (maintain compatibility)
         self.position_registry.remove_position(position.symbol)
         del self.positions[position.symbol]
+        
+        # Track as recently closed to prevent sync from re-adding (5 min grace period)
+        self._recently_closed[position.symbol] = datetime.now(timezone.utc)
         
         # Log ML training data for exit
         intelligence.log_trade_exit(
@@ -1589,6 +1939,18 @@ class OrderRouter:
             "price": price,
             "qty": position.size_qty
         })
+
+        # Emit normalized close event
+        self._emit_order_event(
+            event_type="close",
+            position=position,
+            price=price,
+            reason=reason,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            size_usd=position.size_usd,
+            size_qty=position.size_qty,
+        )
         
         pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
         logger.info("Final PnL: %s (%s%%)", pnl_str, f"{pnl_pct:+.2f}")
@@ -1623,11 +1985,14 @@ class OrderRouter:
             
             success = getattr(order, "success", None) or (order.get("success") if isinstance(order, dict) else True)
             if success or order:
+                self._circuit_breaker.record_success()
                 logger.info("[LIVE] Sold %s, qty %s", symbol, f"{qty:.6f}")
             else:
+                self._circuit_breaker.record_failure()
                 logger.error("[LIVE] Sell order failed: %s", order)
                 
         except Exception as e:
+            self._circuit_breaker.record_failure()
             logger.error("[LIVE] Error selling: %s", e, exc_info=True)
     
     async def force_close_all(self, reason: str = "manual"):

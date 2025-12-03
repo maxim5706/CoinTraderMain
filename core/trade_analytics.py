@@ -8,12 +8,14 @@ This creates a rich dataset for:
 """
 
 import json
+import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 ANALYTICS_DIR = Path(__file__).parent.parent / "data" / "analytics"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -150,8 +152,10 @@ def load_trade_history(days: int = 30) -> list[dict]:
             for line in f:
                 try:
                     trades.append(json.loads(line))
-                except:
-                    pass
+                except json.JSONDecodeError as e:
+                    logger.warning("[ANALYTICS] Skipping malformed trade line in %s: %s", path.name, e)
+                except Exception as e:  # Catch unexpected errors but surface them
+                    logger.error("[ANALYTICS] Failed to load trade from %s: %s", path.name, e, exc_info=True)
     
     return trades
 

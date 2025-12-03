@@ -15,6 +15,10 @@ from .base import BaseStrategy, StrategySignal
 from .burst_flag import BurstFlagStrategy
 from .vwap_reclaim import VWAPReclaimStrategy
 from .mean_reversion import MeanReversionStrategy
+from .daily_momentum import DailyMomentumStrategy
+from .range_breakout import RangeBreakoutStrategy
+from .relative_strength import RelativeStrengthStrategy
+from .support_bounce import SupportBounceStrategy
 
 
 @dataclass
@@ -23,7 +27,16 @@ class OrchestratorConfig:
     enable_burst_flag: bool = True
     enable_vwap_reclaim: bool = True
     enable_mean_reversion: bool = False  # DISABLED - 0% win rate, losing -$16.91
+    enable_daily_momentum: bool = True   # Catches multi-day trends like SUI
+    enable_range_breakout: bool = True   # Consolidation breakouts
+    enable_relative_strength: bool = True # Outperformers vs BTC
+    enable_support_bounce: bool = True    # Key level bounces
     enable_rotation: bool = False  # Future
+    
+    # Confluence settings
+    require_confluence: bool = True       # Require 2+ strategies to agree
+    confluence_boost: float = 15.0        # Score boost when confluence detected
+    solo_signal_penalty: float = 0.7      # Size multiplier for solo signals
 
 
 class StrategyOrchestrator:
@@ -46,6 +59,14 @@ class StrategyOrchestrator:
             self.strategies.append(VWAPReclaimStrategy())
         if self.config.enable_mean_reversion:
             self.strategies.append(MeanReversionStrategy())
+        if self.config.enable_daily_momentum:
+            self.strategies.append(DailyMomentumStrategy())
+        if self.config.enable_range_breakout:
+            self.strategies.append(RangeBreakoutStrategy())
+        if self.config.enable_relative_strength:
+            self.strategies.append(RelativeStrengthStrategy())
+        if self.config.enable_support_bounce:
+            self.strategies.append(SupportBounceStrategy())
         
         # Stats tracking
         self._signal_counts: Dict[str, int] = {}
@@ -88,8 +109,23 @@ class StrategyOrchestrator:
         if not candidates:
             return None
         
+        # Confluence detection: count how many strategies agree
+        confluence_count = len(candidates)
+        has_confluence = confluence_count >= 2
+        
         # Select highest edge_score_base
         best = max(candidates, key=lambda s: s.edge_score_base)
+        
+        # Apply confluence boost or solo penalty
+        if has_confluence:
+            # Multiple strategies agree - boost confidence
+            best.edge_score_base = min(100, best.edge_score_base + self.config.confluence_boost)
+            best.confluence_count = confluence_count
+            best.reasons.append(f"confluence_{confluence_count}")
+        else:
+            # Solo signal - track for potential size reduction
+            best.confluence_count = 1
+            best.reasons.append("solo_signal")
         
         # Track selection
         self._selection_counts[best.strategy_id] = \

@@ -9,7 +9,7 @@ This module adds decision intelligence on top of the burst-flag strategy:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional, Dict, List
 import numpy as np
 
@@ -161,9 +161,11 @@ class PositionLimits:
     max_per_sector: int = 4           # Max 4 per sector (allow L1 stacking)
     max_per_corr_group: int = 2       # Max 2 in any correlation group
     max_total_positions: int = 10     # Max active plays (not time-based!)
-    max_weak_plays: int = 3           # Max weak plays before pausing new entries
+    max_weak_plays: int = 5           # Max weak plays before pausing new entries
     global_cooldown_sec: int = 30     # Reduced: 30s between trades (play quality matters more)
     symbol_cooldown_sec: int = 300    # 5 min per symbol (prevent same-symbol spam)
+    daily_loss_limit_pct: float = 5.0 # Stop trading after -5% daily drawdown
+    daily_loss_limit_usd: float = 25.0  # Or after $25 loss (whichever first)
 
 
 class IntelligenceLayer:
@@ -193,6 +195,14 @@ class IntelligenceLayer:
         # Live indicators + ML (single source of truth)
         self.live_indicators: Dict[str, 'LiveIndicators'] = {}
         self.live_ml: Dict[str, 'LiveMLResult'] = {}
+        
+        # Daily loss tracking
+        self._daily_realized_pnl: float = 0.0
+        self._daily_reset_date: Optional[date] = None
+        self._trading_halted: bool = False
+        
+        # Strategy performance tracking
+        self._strategy_stats: Dict[str, Dict[str, int]] = {}  # strategy_id -> {wins, losses, total_pnl}
         
     def get_sector(self, symbol: str) -> str:
         """Get sector for a symbol."""
@@ -271,12 +281,97 @@ class IntelligenceLayer:
     @property
     def regime_status(self) -> str:
         """Get human-readable regime status."""
+        fg_str = f" F&G:{self._fear_greed}" if hasattr(self, '_fear_greed') and self._fear_greed else ""
         if self._market_regime == "risk_off":
-            return f"🔴 RISK OFF (BTC {self._btc_trend_1h:+.1f}%)"
+            return f"🔴 RISK OFF (BTC {self._btc_trend_1h:+.1f}%{fg_str})"
         elif self._market_regime == "caution":
-            return f"🟡 CAUTION (BTC {self._btc_trend_1h:+.1f}%)"
+            return f"🟡 CAUTION (BTC {self._btc_trend_1h:+.1f}%{fg_str})"
+        elif self._market_regime == "bullish":
+            return f"🟢 BULLISH (BTC {self._btc_trend_1h:+.1f}%{fg_str})"
         else:
-            return f"🟢 NORMAL (BTC {self._btc_trend_1h:+.1f}%)"
+            return f"🟢 NORMAL (BTC {self._btc_trend_1h:+.1f}%{fg_str})"
+    
+    def fetch_fear_greed(self) -> Optional[int]:
+        """Fetch Fear & Greed index from alternative.me (free API)."""
+        try:
+            import urllib.request
+            import json
+            
+            url = "https://api.alternative.me/fng/?limit=1"
+            with urllib.request.urlopen(url, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                if data and "data" in data and len(data["data"]) > 0:
+                    value = int(data["data"][0]["value"])
+                    classification = data["data"][0]["value_classification"]
+                    self._fear_greed = value
+                    self._fear_greed_class = classification
+                    self._fear_greed_updated = datetime.now(timezone.utc)
+                    
+                    # Adjust regime based on extreme fear/greed
+                    if value <= 20:  # Extreme fear
+                        # Could be buying opportunity OR more downside
+                        pass  # Don't change regime, just track
+                    elif value >= 80:  # Extreme greed
+                        # Potential top, be cautious
+                        if self._market_regime == "normal":
+                            self._market_regime = "caution"
+                    
+                    return value
+            return None
+        except Exception as e:
+            # Silent fail - this is optional data
+            return None
+    
+    def get_fear_greed(self) -> Optional[dict]:
+        """Get cached Fear & Greed data."""
+        if not hasattr(self, '_fear_greed') or self._fear_greed is None:
+            return None
+        return {
+            "value": self._fear_greed,
+            "classification": getattr(self, '_fear_greed_class', 'Unknown'),
+            "updated": getattr(self, '_fear_greed_updated', None),
+        }
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Time-of-Day Awareness
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def get_session_info(self) -> dict:
+        """
+        Get current trading session info.
+        
+        Sessions (UTC):
+        - Asia:       00:00-08:00 (good liquidity)
+        - Europe:     08:00-14:00 (good liquidity)
+        - US:         14:00-21:00 (best liquidity)
+        - Dead zone:  21:00-00:00 (low liquidity)
+        """
+        now = datetime.now(timezone.utc)
+        hour = now.hour
+        
+        if 0 <= hour < 8:
+            session = "asia"
+            multiplier = 1.0  # Full trading
+        elif 8 <= hour < 14:
+            session = "europe"
+            multiplier = 1.0  # Full trading
+        elif 14 <= hour < 21:
+            session = "us"
+            multiplier = 1.0  # Best liquidity
+        else:  # 21-24
+            session = "dead_zone"
+            multiplier = 0.6  # Reduce size in dead zone
+        
+        return {
+            "session": session,
+            "hour_utc": hour,
+            "size_multiplier": multiplier,
+            "is_active": multiplier >= 1.0,
+        }
+    
+    def get_size_multiplier(self) -> float:
+        """Get position size multiplier based on time of day."""
+        return self.get_session_info()["size_multiplier"]
     
     def update_live_indicators(self, symbol: str, indicators):
         """
@@ -889,23 +984,31 @@ class IntelligenceLayer:
         """
         Adjust position size based on confidence.
         
-        Higher confidence = larger size (up to 1.5x)
-        Lower confidence = smaller size (down to 0.5x)
+        AGGRESSIVE on high conviction (1.5x)
+        SMART by scaling down on weak setups
+        PATIENT by regime-aware reduction
         """
-        if score.total_score >= 80:
+        # More aggressive tiers for better setups
+        if score.total_score >= 85:
+            multiplier = 1.5  # A+ setup - max size
+        elif score.total_score >= 80:
             multiplier = 1.3  # High conviction
-        elif score.total_score >= 65:
-            multiplier = 1.0  # Normal
+        elif score.total_score >= 70:
+            multiplier = 1.1  # Good setup
+        elif score.total_score >= 60:
+            multiplier = 0.9  # Decent setup
         elif score.total_score >= 50:
-            multiplier = 0.7  # Lower conviction
+            multiplier = 0.7  # Borderline
         else:
-            multiplier = 0.5  # Minimum
+            multiplier = 0.5  # Minimum (shouldn't reach here)
         
         # Regime-aware sizing: downshift in caution/risk_off
         if self._market_regime == "caution":
-            multiplier *= 0.8
+            multiplier *= 0.85
         elif self._market_regime == "risk_off":
-            multiplier *= 0.6
+            multiplier *= 0.65
+        elif self._market_regime == "bullish":
+            multiplier *= 1.1  # Slight boost in bull regime
         
         return base_size * multiplier
     
@@ -933,7 +1036,7 @@ class IntelligenceLayer:
         })
     
     def log_trade_exit(self, symbol: str, pnl: float, pnl_pct: float, 
-                       exit_reason: str, hold_minutes: float):
+                       exit_reason: str, hold_minutes: float, strategy_id: str = "unknown"):
         """Log exit outcome for ML training. Call when closing position."""
         from core.logger import log_trade, utc_iso_str
         
@@ -954,7 +1057,92 @@ class IntelligenceLayer:
             "hit_tp": hit_tp,
             "hit_stop": hit_stop,
             "btc_trend_at_exit": self._btc_trend_1h,
+            "strategy_id": strategy_id,
         })
+        
+        # Update daily PnL and strategy stats
+        self.record_trade_result(pnl, strategy_id, is_win)
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Daily Loss Limit
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def _check_daily_reset(self):
+        """Reset daily PnL if it's a new day."""
+        today = date.today()
+        if self._daily_reset_date != today:
+            self._daily_realized_pnl = 0.0
+            self._daily_reset_date = today
+            self._trading_halted = False
+    
+    def record_trade_result(self, pnl: float, strategy_id: str = "unknown", is_win: bool = False):
+        """Record trade result for daily tracking and strategy stats."""
+        self._check_daily_reset()
+        
+        # Update daily realized PnL
+        self._daily_realized_pnl += pnl
+        
+        # Check if we hit daily loss limit
+        if self._daily_realized_pnl <= -self.limits.daily_loss_limit_usd:
+            self._trading_halted = True
+        
+        # Update strategy stats
+        if strategy_id not in self._strategy_stats:
+            self._strategy_stats[strategy_id] = {"wins": 0, "losses": 0, "total_pnl": 0.0}
+        
+        stats = self._strategy_stats[strategy_id]
+        if is_win:
+            stats["wins"] += 1
+        else:
+            stats["losses"] += 1
+        stats["total_pnl"] += pnl
+    
+    def is_trading_halted(self) -> tuple[bool, str]:
+        """Check if trading is halted due to daily loss limit."""
+        self._check_daily_reset()
+        
+        if self._trading_halted:
+            return True, f"Daily loss limit hit: ${self._daily_realized_pnl:.2f}"
+        
+        return False, ""
+    
+    def get_daily_pnl(self) -> float:
+        """Get today's realized PnL."""
+        self._check_daily_reset()
+        return self._daily_realized_pnl
+    
+    # ─────────────────────────────────────────────────────────────────────────
+    # Strategy Performance
+    # ─────────────────────────────────────────────────────────────────────────
+    
+    def get_strategy_stats(self) -> Dict[str, Dict]:
+        """Get performance stats per strategy."""
+        result = {}
+        for strategy_id, stats in self._strategy_stats.items():
+            wins = stats["wins"]
+            losses = stats["losses"]
+            total = wins + losses
+            win_rate = (wins / total * 100) if total > 0 else 0
+            result[strategy_id] = {
+                "wins": wins,
+                "losses": losses,
+                "total": total,
+                "win_rate": win_rate,
+                "total_pnl": stats["total_pnl"],
+            }
+        return result
+    
+    def get_strategy_summary(self) -> str:
+        """Get formatted strategy performance summary."""
+        stats = self.get_strategy_stats()
+        if not stats:
+            return "No trades recorded yet"
+        
+        lines = ["Strategy Performance:"]
+        for strat, data in sorted(stats.items(), key=lambda x: x[1]["total_pnl"], reverse=True):
+            pnl_str = f"+${data['total_pnl']:.2f}" if data['total_pnl'] >= 0 else f"-${abs(data['total_pnl']):.2f}"
+            lines.append(f"  {strat}: {data['wins']}W/{data['losses']}L ({data['win_rate']:.0f}%) {pnl_str}")
+        return "\n".join(lines)
 
 
 # Singleton instance

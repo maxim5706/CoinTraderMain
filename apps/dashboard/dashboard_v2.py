@@ -1,6 +1,6 @@
 """Enhanced Rich terminal dashboard with trust panels."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from rich.console import Console
@@ -12,7 +12,6 @@ from rich.layout import Layout
 from rich.live import Live
 
 from core.state import BotState, BurstCandidate, FocusCoinState, CurrentSignal, PositionDisplay
-from datetime import datetime, timezone
 
 
 console = Console()
@@ -31,7 +30,7 @@ class DashboardV2:
         # Dashboard heartbeat
         self.state.heartbeat_dashboard = datetime.now(timezone.utc)
         
-        # Mode
+        # Mode/Profile
         mode_color = "yellow" if self.state.mode == "paper" else "green bold"
         top.append("MODE: ", style="dim")
         top.append(f"{self.state.mode.upper()}", style=mode_color)
@@ -54,6 +53,22 @@ class DashboardV2:
                 top.append(f"${self.state.portfolio_value:.2f}", style="bold white")
                 top.append(f" (${self.state.cash_balance:.0f} cash + ${self.state.holdings_value:.0f} crypto)", style="dim")
                 top.append(" │ ")
+        
+        # Truth/sync (live)
+        if self.state.mode != "paper":
+            age = getattr(self.state, "portfolio_snapshot_age_s", 999.0)
+            paused = getattr(self.state, "sync_paused", False)
+            stale = getattr(self.state, "truth_stale", False)
+            top.append("SYNC: ", style="dim")
+            if paused:
+                top.append("PAUSED", style="red bold")
+            elif age < 15 and not stale:
+                top.append("FRESH", style="green")
+                top.append(f" ({age:.0f}s)", style="dim")
+            else:
+                top.append("STALE", style="yellow")
+                top.append(f" ({age:.0f}s)", style="dim")
+            top.append(" │ ")
         
         # API status
         top.append("API: ", style="dim")
@@ -79,14 +94,6 @@ class DashboardV2:
         else:
             top.append("WS: ", style="dim")
             top.append("❌", style="red")
-        top.append(" │ ")
-        
-        # Stream / warm counts
-        top.append("Streams: ", style="dim")
-        top.append(f"{self.state.universe.symbols_streaming}", style="white")
-        top.append(" │ ")
-        top.append("Warm: ", style="dim")
-        top.append(f"{self.state.warm_symbols}/{self.state.universe.eligible_symbols}", style="white")
         top.append(" │ ")
         
         # ML freshness
@@ -123,17 +130,6 @@ class DashboardV2:
             top.append("BTC: ", style="dim")
             top.append(f"🟢 OK", style="green")
         top.append(f" ({self.state.btc_trend_1h:+.1f}%)", style="dim")
-        top.append(" │ ")
-        
-        # Tier stats (compact)
-        warm = len(self.state.warm_symbols) if isinstance(self.state.warm_symbols, list) else self.state.warm_symbols
-        cold = len(self.state.cold_symbols) if isinstance(self.state.cold_symbols, list) else self.state.cold_symbols
-        if cold > 0:
-            top.append("Data: ", style="dim")
-            top.append(f"{warm}✓/{cold}○", style="yellow")
-        else:
-            top.append("Data: ", style="dim")
-            top.append(f"{warm}✓", style="green")
         top.append(" │ ")
         
         # Kill switch
@@ -187,40 +183,31 @@ class DashboardV2:
         row.append(self._render_led(self.state.heartbeat_ml, 180))
         row.append(" SCAN ", style="dim")
         row.append(self._render_led(self.state.heartbeat_scanner, 300))
-        row.append(" ORD ", style="dim")
-        row.append(self._render_led(self.state.heartbeat_order_router, 120))
+        row.append(" REST ", style="dim")
+        row.append("🔴" if getattr(self.state, "rest_rate_degraded", False) else "🟢")
+        row.append(" B/F ", style="dim")
+        row.append(f"{getattr(self.state,'pending_backfills',0)}", style="yellow" if getattr(self.state,'pending_backfills',0) else "green")
         row.append(" UI ", style="dim")
         row.append(self._render_led(self.state.heartbeat_dashboard, 10))
         return row
     
-    def render_burst_table(self) -> Table:
-        """Render the burst leaderboard (radar)."""
+    def render_scanner_table(self) -> Table:
+        """Render the opportunity scanner (multi-strategy)."""
         table = Table(
-            title="[bold cyan]⚡ Burst Radar[/]",
+            title="[bold cyan]📡 Scanner[/]",
             expand=True,
             show_edge=False,
             header_style="bold cyan"
         )
         
-        table.add_column("Symbol", width=10)
-        table.add_column("Price", justify="right", width=10)
-        table.add_column("Score", justify="right", width=6)  # Entry quality score
-        table.add_column("Burst", justify="right", width=6)
-        table.add_column("Vol↑", justify="right", width=5)
-        table.add_column("Rng↑", justify="right", width=5)
+        table.add_column("Symbol", width=8)
+        table.add_column("Strat", width=8)  # Strategy that generated signal
+        table.add_column("Score", justify="right", width=5)
+        table.add_column("R:R", justify="right", width=4)
+        table.add_column("Vol↑", justify="right", width=4)
         table.add_column("Trend", justify="right", width=6)
         
-        for row in self.state.burst_leaderboard[:50]:
-            # Color burst score
-            if row.burst_score >= 5:
-                burst_style = "bold green"
-            elif row.burst_score >= 3:
-                burst_style = "yellow"
-            elif row.burst_score > 0:
-                burst_style = "white"
-            else:
-                burst_style = "dim cyan"  # Still loading
-            
+        for row in self.state.burst_leaderboard[:9]:
             # Color trend
             if row.trend_5m > 0.5:
                 trend_style = "green"
@@ -229,150 +216,176 @@ class DashboardV2:
             else:
                 trend_style = "dim"
             
-            # Format burst score - show "..." when still loading
-            if row.burst_score > 0:
-                burst_text = f"{row.burst_score:.1f}"
-            else:
-                burst_text = "..."
-            
             # Format entry score with color
             entry_score = getattr(row, 'entry_score', 0)
             if entry_score >= 70:
                 score_style = "bold green"
-                score_text = f"{entry_score}"
             elif entry_score >= 50:
                 score_style = "yellow"
-                score_text = f"{entry_score}"
-            elif entry_score > 0:
-                score_style = "dim"
-                score_text = f"{entry_score}"
             else:
                 score_style = "dim"
-                score_text = "-"
+            
+            # Get strategy from row if available
+            strategy = getattr(row, 'strategy', '')
+            if not strategy:
+                # Infer from metrics
+                if row.burst_score >= 3:
+                    strategy = "burst"
+                elif row.vol_spike >= 5:
+                    strategy = "impulse"
+                elif row.trend_5m > 1.0 and row.vol_spike < 2:
+                    strategy = "daily"  # Multi-day trend (slow grind)
+                elif row.vol_spike < 1.5 and abs(row.trend_5m) < 0.5:
+                    strategy = "range"  # Consolidation/range
+                else:
+                    strategy = "vwap"
+            strategy = strategy[:7]  # Truncate
+            
+            # R:R ratio
+            rr = getattr(row, 'rr_ratio', 0)
+            rr_text = f"{rr:.1f}" if rr > 0 else "-"
             
             table.add_row(
                 row.symbol.replace("-USD", ""),
-                f"${row.price:.4f}" if row.price < 100 else f"${row.price:.2f}",
-                Text(score_text, style=score_style),
-                Text(burst_text, style=burst_style),
+                Text(strategy, style="cyan"),
+                Text(f"{entry_score}" if entry_score > 0 else "-", style=score_style),
+                rr_text,
                 f"{row.vol_spike:.0f}x" if row.vol_spike > 0 else "-",
-                f"{row.range_spike:.0f}x" if row.range_spike > 0 else "-",
                 Text(f"{row.trend_5m:+.1f}%" if row.trend_5m != 0 else "-", style=trend_style),
             )
         
-        # Fill empty rows
-        # Fill to at least 8 rows to keep table height stable
+        # Fill empty rows to keep table height stable
         for _ in range(max(0, 8 - len(self.state.burst_leaderboard))):
-            table.add_row("-", "-", "-", "-", "-", "-", "-", style="dim")
+            table.add_row("-", "-", "-", "-", "-", "-", style="dim")
         
         return table
     
-    def render_focus_panel(self) -> Panel:
-        """Render the focus coin detailed state."""
+    def render_blocked_panel(self) -> Panel:
+        """Render blocked signals panel - shows what's being rejected."""
+        blocked = list(getattr(self.state, 'blocked_signals', []))[:5]
+        
+        if not blocked:
+            # Show recent rejection stats instead
+            lines = []
+            total_rej = (self.state.rejections_warmth + self.state.rejections_regime + 
+                        self.state.rejections_score + self.state.rejections_rr + 
+                        self.state.rejections_spread + self.state.rejections_limits)
+            if total_rej > 0:
+                lines.append(f"[dim]Total blocked:[/] {total_rej}")
+                if self.state.rejections_limits > 0:
+                    lines.append(f"[yellow]limits:[/] {self.state.rejections_limits}")
+                if self.state.rejections_score > 0:
+                    lines.append(f"[dim]score:[/] {self.state.rejections_score}")
+                if self.state.rejections_spread > 0:
+                    lines.append(f"[dim]spread:[/] {self.state.rejections_spread}")
+                if self.state.rejections_rr > 0:
+                    lines.append(f"[dim]r:r:[/] {self.state.rejections_rr}")
+            else:
+                lines.append("[dim]No rejections yet[/]")
+            return Panel("\n".join(lines), title="[bold yellow]⚠️ Blocked[/]", expand=True)
+        
+        lines = []
+        for sig in blocked:
+            sym = getattr(sig, 'symbol', '?').replace('-USD', '')
+            strat = getattr(sig, 'strategy', '')[:6]
+            conf = getattr(sig, 'confidence', 0) * 100
+            reason = getattr(sig, 'block_reason', '?')[:20]
+            lines.append(f"[bold]{sym}[/] {strat} {conf:.0f}%")
+            lines.append(f"  [red]{reason}[/]")
+        
+        return Panel("\n".join(lines), title="[bold yellow]⚠️ Blocked[/]", expand=True)
+    
+    def render_next_play_panel(self) -> Panel:
+        """Render the next play panel - simplified, shows current best opportunity."""
         fc = self.state.focus_coin
+        sig = self.state.current_signal
         
         if not fc.symbol:
-            return Panel(
-                "[dim]No focus coin selected yet...[/]",
-                title="[bold magenta]🎯 Focus Coin[/]",
-                expand=True
-            )
+            # Show waiting status
+            lines = ["[dim]Scanning for opportunities...[/]", ""]
+            
+            # Show what's blocking us
+            if self.state.rejections_limits > 0:
+                lines.append("[yellow]⛔ Gate: position limits[/]")
+            elif self.state.rejections_warmth > 0:
+                lines.append("[dim]⏳ Warming up data...[/]")
+            else:
+                lines.append("[dim]No valid setups yet[/]")
+            
+            return Panel("\n".join(lines), title="[bold magenta]🎯 Next Play[/]", expand=True)
         
         lines = []
         
-        # Header
+        # Header: Symbol @ Price | Strategy | Confidence
         stage_colors = {
-            "waiting": "dim",
-            "burst": "yellow",
-            "impulse": "cyan",
-            "flag": "blue",
-            "breakout": "bold green",
-            "warmup": "magenta",
-            "trap": "bold red"
+            "waiting": "dim", "burst": "yellow", "impulse": "cyan",
+            "flag": "blue", "breakout": "bold green", "warmup": "magenta", "trap": "bold red"
         }
         stage_style = stage_colors.get(fc.stage, "dim")
         
-        # Show spread next to price
-        spread_str = ""
+        # Get strategy name
+        strategy = getattr(sig, 'strategy', '') or fc.stage
+        conf = sig.confidence * 100 if sig.confidence else 0
+        conf_style = "green" if conf >= 70 else "yellow" if conf >= 50 else "dim"
+        
+        lines.append(f"[bold]{fc.symbol}[/] @ ${fc.price:.4f}")
+        lines.append(f"[cyan]{strategy}[/] | [{conf_style}]{conf:.0f}% conf[/] | [{stage_style}]{fc.stage.upper()}[/]")
+        
+        # Spread warning
         if fc.spread_bps > 0:
             spread_color = "green" if fc.spread_bps <= 12 else "yellow" if fc.spread_bps <= 20 else "red"
-            spread_str = f"  [{spread_color}]({fc.spread_bps:.1f}bps)[/]"
+            lines.append(f"[{spread_color}]Spread: {fc.spread_bps:.1f}bps[/]")
         
-        lines.append(f"[bold]{fc.symbol}[/]  ${fc.price:.4f}{spread_str}  [{stage_style}]{fc.stage.upper()}[/]")
         lines.append("")
-        if not fc.warmup_ready:
-            lines.append(
-                f"[magenta]Warmup[/]: 1m {fc.warmup_1m}/10  |  5m {fc.warmup_5m}/3"
-            )
-            lines.append("")
         
-        # Impulse section
-        lines.append("[bold cyan]📈 Impulse[/]")
-        if fc.impulse_move != 0:
-            move_color = "green" if fc.impulse_move > 0 else "red"
-            lines.append(f"  move: [{move_color}]{fc.impulse_move:+.2f}%[/]  candles: {fc.impulse_green_candles}")
-            lines.append(f"  high: ${fc.impulse_high:.4f}  low: ${fc.impulse_low:.4f}")
-            lines.append(f"  age: {fc.impulse_age_min:.0f}m  ATR: ${fc.impulse_atr:.4f}")
+        # Entry details if signal is active
+        if sig.action in ["ENTER_LONG", "ENTER_LONG_FAST"]:
+            lines.append(f"[bold]Entry:[/] ${sig.entry_price:.4f}")
+            lines.append(f"[red]Stop:[/]  ${sig.stop_price:.4f}  [green]TP1:[/] ${sig.tp1_price:.4f}")
+            
+            # R:R calculation
+            if sig.stop_price and sig.entry_price and sig.tp1_price:
+                risk = abs(sig.entry_price - sig.stop_price)
+                reward = abs(sig.tp1_price - sig.entry_price)
+                rr = reward / risk if risk > 0 else 0
+                lines.append(f"[bold]R:R:[/] {rr:.1f}x")
         else:
-            lines.append("  [dim]waiting for impulse...[/]")
-        lines.append("")
-        
-        # Flag section
-        lines.append("[bold blue]🚩 Flag[/]")
-        if fc.flag_age_min > 0:
-            lines.append(f"  retrace: {fc.flag_retracement*100:.1f}%  age: {fc.flag_age_min:.0f}m")
-            lines.append(f"  slope: {fc.flag_slope:+.4f}  vol_decay: {fc.flag_vol_decay:.2f}")
-            lines.append(f"  high: ${fc.flag_high:.4f}  low: ${fc.flag_low:.4f}")
-        else:
-            lines.append("  [dim]waiting for flag...[/]")
-        lines.append("")
-        
-        # Traps section
-        lines.append("[bold red]⚠️ Traps[/]")
-        traps = []
-        if fc.triple_top:
-            traps.append("[red]TRIPLE TOP[/]")
-        if fc.head_shoulders:
-            traps.append("[red]H&S[/]")
-        if traps:
-            lines.append(f"  {' '.join(traps)}")
-        else:
-            lines.append("  [green]none detected[/]")
-        if fc.skip_reason:
-            lines.append(f"  skip: {fc.skip_reason}")
-        
-        # Live population + log
-        lines.append("")
-        lines.append("[bold green]🛰 Live Feed[/]")
-        lines.append(
-            f"  ticks/5s: {self.state.ticks_last_5s}  "
-            f"candles/5s: {self.state.candles_last_5s}  "
-            f"events: {self.state.events_last_5s}"
-        )
+            lines.append(f"[dim]Action: {sig.action}[/]")
         
         lines.append("")
-        lines.append("[bold]📜 Log[/]")
-        if not self.state.live_log:
-            lines.append("  [dim]no events yet...[/]")
-        else:
-            for ts, lvl, msg in list(self.state.live_log)[:6]:
-                color = {
-                    "WS": "cyan",
-                    "DATA": "dim",
-                    "FOCUS": "magenta",
-                    "STRAT": "yellow",
-                    "TRADE": "green",
-                    "UNIV": "blue",
-                    "WARN": "red",
-                }.get(lvl, "white")
+        
+        # Gate status - why are we blocked?
+        gate_reason = getattr(sig, 'block_reason', '') or sig.reason or ''
+        if gate_reason and sig.action == "WAIT":
+            lines.append(f"[yellow]⛔ Gate:[/] {gate_reason[:40]}")
+        elif sig.action == "WAIT":
+            # Check common blockers
+            if self.state.rejections_limits > 0:
+                lines.append("[yellow]⛔ Gate: position limits[/]")
+            elif not fc.warmup_ready:
+                lines.append(f"[magenta]⏳ Warmup: 1m {fc.warmup_1m}/10 | 5m {fc.warmup_5m}/3[/]")
+        
+        lines.append("")
+        
+        # Quick metrics
+        lines.append(f"[dim]Vol:[/] {fc.vol_spike:.0f}x  [dim]Trend:[/] {fc.trend_5m:+.1f}%")
+        
+        # Recent log (compact)
+        lines.append("")
+        lines.append("[dim]─── Recent ───[/]")
+        if self.state.live_log:
+            for ts, lvl, msg in list(self.state.live_log)[:10]:
+                color = {"TRADE": "green", "STRAT": "yellow", "WARN": "red"}.get(lvl, "dim")
                 tstr = ts.strftime("%H:%M:%S")
-                lines.append(f"  [{color}]{tstr} {lvl}[/] {msg}")
+                lines.append(f"[{color}]{tstr}[/] {msg[:30]}")
+        else:
+            lines.append("[dim]no events yet[/]")
         
-        return Panel(
-            "\n".join(lines),
-            title="[bold magenta]🎯 Focus Coin[/]",
-            expand=True
-        )
+        return Panel("\n".join(lines), title="[bold magenta]🎯 Next Play[/]", expand=True)
+    
+    def render_focus_panel(self) -> Panel:
+        """Alias for backwards compatibility."""
+        return self.render_next_play_panel()
     
     def render_signal_panel(self) -> Panel:
         """Render the current signal panel."""
@@ -474,9 +487,10 @@ class DashboardV2:
         # In LIVE mode, show tracked positions
         if not self.state.positions:
             holdings = getattr(self.state, 'holdings_value', 0)
+            age = getattr(self.state, "portfolio_snapshot_age_s", 999.0)
             if holdings > 0:
                 return Panel(
-                    f"[dim]Syncing...[/]\n[yellow]${holdings:.0f} on exchange[/]",
+                    f"[dim]Syncing...[/]\n[yellow]${holdings:.0f} on exchange[/]\n[dim]snap:{age:.0f}s[/]",
                     title="[bold green]📊 LIVE[/]",
                     expand=True
                 )
@@ -489,42 +503,81 @@ class DashboardV2:
         lines = []
         total_value = 0
         total_pnl = 0
+        weak_count = 0
+        
         for p in self.state.positions:
             pnl_color = "green" if p.unrealized_pct >= 0 else "red"
             sym = p.symbol.replace('-USD', '')
             
-            # Show play quality indicator
-            quality = getattr(p, 'play_quality', 'neutral')
-            conf = getattr(p, 'current_confidence', 0)
-            trend = getattr(p, 'confidence_trend', 'stable')
+            # Get confidence - this is key!
+            conf = getattr(p, 'current_confidence', 70)
             
-            if quality == 'strong':
-                qual_icon = "🟢"
-            elif quality == 'weak':
+            # Color based on confidence threshold (15% = auto-exit)
+            if conf < 15:
+                conf_style = "red bold"
                 qual_icon = "🔴"
-            else:
+                weak_count += 1
+            elif conf < 50:
+                conf_style = "yellow"
                 qual_icon = "🟡"
-            
-            # Trend arrow
-            if trend == 'rising':
-                trend_icon = "↑"
-            elif trend == 'falling':
-                trend_icon = "↓"
+                weak_count += 1
             else:
-                trend_icon = "→"
+                conf_style = "green"
+                qual_icon = "🟢"
             
-            lines.append(f"{qual_icon} [bold]{sym}[/] ${p.size_usd:.0f} [{pnl_color}]{p.unrealized_pct:+.1f}%[/] {trend_icon}")
+            # Compact line: Icon Sym $Size PnL% Conf%
+            lines.append(f"{qual_icon} [bold]{sym:5}[/] ${p.size_usd:>4.0f} [{pnl_color}]{p.unrealized_pct:+5.1f}%[/] [{conf_style}]{conf:>3.0f}%[/]")
             total_value += p.size_usd
             total_pnl += p.unrealized_pnl
         
-        # Add total line
+        # Add total line with weak count warning
         pnl_color = "green" if total_pnl >= 0 else "red"
-        lines.append(f"[dim]───────────[/]")
-        lines.append(f"Total: ${total_value:.0f} [{pnl_color}]${total_pnl:+.1f}[/]")
+        lines.append(f"[dim]────────────────[/]")
+        lines.append(f"${total_value:.0f} [{pnl_color}]${total_pnl:+.1f}[/]")
+        if weak_count > 0:
+            lines.append(f"[yellow]⚠ {weak_count} weak plays[/]")
         
         return Panel(
             "\n".join(lines),
             title=f"[bold green]📊 LIVE ({len(self.state.positions)})[/]",
+            expand=True
+        )
+
+    def render_recent_orders_panel(self) -> Panel:
+        """Render a compact strip of recent order events."""
+        orders = list(getattr(self.state, "recent_orders", []))
+        if not orders:
+            return Panel(
+                "[dim]No orders yet[/]",
+                title="[bold magenta]🧾 Orders[/]",
+                expand=True
+            )
+
+        icons = {
+            "open": "🟢",
+            "partial_close": "🟡",
+            "close": "🔴",
+        }
+        lines = []
+        for evt in orders[:8]:
+            icon = icons.get(getattr(evt, "event_type", ""), "⚪")
+            ts = getattr(evt, "ts", None)
+            ts_str = ts.strftime("%H:%M:%S") if ts else ""
+            sym = getattr(evt, "symbol", "").replace("-USD", "")
+            size = getattr(evt, "size_usd", 0.0)
+            price = getattr(evt, "price", 0.0)
+            line = f"{icon} {sym:5} ${size:.0f} @ ${price:.2f}"
+            pnl = getattr(evt, "pnl", None)
+            if pnl is not None and getattr(evt, "event_type", "") != "open":
+                pnl_color = "green" if pnl >= 0 else "red"
+                line += f" [{pnl_color}]{pnl:+.2f}[/]"
+            if ts_str:
+                line = f"{ts_str}  {line}"
+            lines.append(line)
+
+        return Panel(
+            "\n".join(lines),
+            title="[bold magenta]🧾 Orders[/]",
             expand=True
         )
     
@@ -595,6 +648,7 @@ class DashboardV2:
         warm_ok = warm_count >= 10
         warm_status = "🟢" if warm_ok else "🟡"
         lines.append(f"{warm_status} [dim]Warm:[/] {warm_count} | Cold: {cold_count}")
+        lines.append(f"[dim]Streams:[/] {self.state.universe.symbols_streaming}/{self.state.universe.eligible_symbols}")
         
         # Bot Budget
         budget = getattr(self.state, "bot_budget_usd", 0)
@@ -620,6 +674,12 @@ class DashboardV2:
         ws_ok = self.state.ws_ok and self.state.ws_last_age < 10
         ws_status = "🟢" if ws_ok else "🟡" if self.state.ws_ok else "🔴"
         lines.append(f"{ws_status} [dim]WS:[/] {self.state.ws_last_age:.1f}s | reconn: {self.state.ws_reconnect_count}")
+        if self.state.mode != "paper":
+            age = getattr(self.state, "portfolio_snapshot_age_s", 999.0)
+            paused = getattr(self.state, "sync_paused", False)
+            stale = getattr(self.state, "truth_stale", False)
+            truth_status = "🟢" if age < 15 and not stale and not paused else "🟡" if not paused else "🔴"
+            lines.append(f"{truth_status} [dim]Snapshot:[/] {age:.0f}s {'PAUSED' if paused else ''}")
         
         # Gate funnel (compact)
         lines.append("")
@@ -718,22 +778,26 @@ class DashboardV2:
         top_text.append(self.render_ethernet_row())
         layout["top"].update(top_text)
         
-        # Middle: Burst table + Focus coin
+        # Middle: Scanner + Blocked + Next Play
         layout["middle"].split_row(
-            Layout(name="radar", ratio=1),
-            Layout(name="focus", ratio=1),
+            Layout(name="scanner", ratio=1),
+            Layout(name="blocked", size=24),
+            Layout(name="next_play", ratio=1),
         )
-        layout["radar"].update(Panel(self.render_burst_table(), border_style="cyan"))
-        layout["focus"].update(self.render_focus_panel())
+        layout["scanner"].update(Panel(self.render_scanner_table(), border_style="cyan"))
+        layout["blocked"].update(self.render_blocked_panel())
+        layout["next_play"].update(self.render_next_play_panel())
         
-        # Bottom: Signal + Positions + Sanity + Stats
+        # Bottom: Signal + Orders + Positions + Health + Stats
         layout["bottom"].split_row(
             Layout(name="signal", ratio=1),
-            Layout(name="live_pos", size=18),  # Wider for positions
+            Layout(name="orders", ratio=1),
+            Layout(name="live_pos", size=28),  # Wider for confidence display
             Layout(name="sanity", size=22),
             Layout(name="stats", size=14),
         )
         layout["signal"].update(self.render_signal_panel())
+        layout["orders"].update(self.render_recent_orders_panel())
         layout["live_pos"].update(self.render_live_positions_panel())
         layout["sanity"].update(self.render_sanity_panel())
         layout["stats"].update(self.render_stats_panel())

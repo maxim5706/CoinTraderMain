@@ -17,6 +17,7 @@ from dataclasses import dataclass, asdict
 import threading
 
 from core.models import Candle
+from core.mode_paths import get_logs_dir
 
 
 @dataclass
@@ -63,12 +64,17 @@ class CandleStore:
     Persistent candle storage with append-only JSONL files.
     
     Directory structure:
-    logs/candles/{symbol}/1m.jsonl
-    logs/candles/{symbol}/5m.jsonl
+    logs/<mode>/candles/{symbol}/1m.jsonl
+    logs/<mode>/candles/{symbol}/5m.jsonl
     """
     
-    def __init__(self, base_dir: str = "logs/candles"):
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: str | Path | None = None):
+        # Resolve base dir lazily so TRADING_MODE overrides are respected
+        if base_dir:
+            resolved = Path(base_dir)
+            self._base_dir_func = lambda: resolved
+        else:
+            self._base_dir_func = lambda: get_logs_dir() / "candles"
         self._write_lock = threading.Lock()
         self._write_buffer: Dict[str, List[str]] = {}  # symbol -> lines
         self._buffer_size = 10  # Flush every N candles
@@ -76,9 +82,13 @@ class CandleStore:
         # Stats
         self.candles_written = 0
         self.candles_loaded = 0
-        
-        # Ensure base directory exists
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def base_dir(self) -> Path:
+        """Current base directory (mode-aware)."""
+        path = self._base_dir_func()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
     
     def _get_file_path(self, symbol: str, tf: str) -> Path:
         """Get file path for symbol/timeframe."""

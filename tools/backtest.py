@@ -60,9 +60,9 @@ def load_candles(days: int = 7, symbol: Optional[str] = None) -> dict:
                                         "close": float(data.get("close", 0)),
                                         "volume": float(data.get("volume", 0)),
                                     })
-                        except:
+                        except (ValueError, KeyError):
                             pass
-            except:
+            except (json.JSONDecodeError, IOError):
                 pass
     
     # Sort by timestamp

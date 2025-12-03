@@ -32,12 +32,24 @@ class Settings(BaseSettings):
     profile: str = Field(default="prod", alias="PROFILE")
     paper_start_balance_usd: float = Field(default=1000.0, alias="PAPER_START_BALANCE")
     
-    # Risk
-    portfolio_trade_pct: float = 0.02
-    portfolio_max_exposure_pct: float = 0.50
-    max_trade_usd: float = Field(default=5.0, alias="MAX_TRADE_USD")
+    # Risk - Exposure-based (no hard position count limit)
+    portfolio_max_exposure_pct: float = 0.70  # 70% max in positions
+    position_base_pct: float = 0.03           # 3% base size per trade
+    position_min_pct: float = 0.02            # 2% minimum
+    position_max_pct: float = 0.08            # 8% maximum (was 6%)
+    max_trade_usd: float = Field(default=15.0, alias="MAX_TRADE_USD")  # Default $15
     daily_max_loss_usd: float = Field(default=25.0, alias="DAILY_MAX_LOSS_USD")
-    max_positions: int = 12
+    max_positions: int = 10                   # Focus on fewer, bigger positions
+    
+    # Tiered sizing - bet big on best setups
+    whale_trade_usd: float = 30.0             # A+ setups
+    whale_score_min: int = 90                 # Min score for whale
+    whale_confluence_min: int = 2             # Min confluence for whale
+    strong_trade_usd: float = 15.0            # A setups
+    strong_score_min: int = 80                # Min score for strong (OR confluence)
+    normal_trade_usd: float = 8.0             # B setups
+    whale_max_positions: int = 2              # Max whale bets at once
+    strong_max_positions: int = 4             # Max strong bets
     
     # Fees (Intro tier)
     taker_fee_pct: float = 0.012
@@ -111,6 +123,30 @@ class Settings(BaseSettings):
     # Liquidity
     spread_max_bps: float = 25.0
     min_24h_volume_usd: float = 100000
+    
+    # Order management
+    order_cooldown_seconds: int = 1800  # 30 min cooldown per symbol
+    order_cooldown_min_seconds: int = 300  # 5 min hard cooldown after any order
+    
+    # Circuit breaker
+    circuit_breaker_max_failures: int = 5  # Consecutive failures to trip breaker
+    circuit_breaker_reset_seconds: int = 300  # Time to wait before retry (5 min)
+    
+    # Stop order health check
+    stop_health_check_interval: int = 300  # Seconds between re-arming checks (5 min)
+    
+    # Position thresholds
+    position_min_usd: float = 1.0  # Minimum USD value to consider a position
+    position_dust_usd: float = 0.0001  # Holdings below this are dust
+    position_qty_drift_tolerance: float = 0.00001  # Qty difference to flag as drift
+    position_verify_tolerance: float = 0.95  # 5% tolerance for position verification
+    
+    # Ignored symbols (delisted, problematic, or dust to skip)
+    ignored_symbols: str = "SNX-USD,CLV-USD,CGLD-USD,MANA-USD,NU-USD,BOND-USD"
+    
+    @property
+    def ignored_symbol_set(self) -> set[str]:
+        return {s.strip() for s in self.ignored_symbols.split(",") if s.strip()}
     
     @property
     def coins(self) -> list[str]:

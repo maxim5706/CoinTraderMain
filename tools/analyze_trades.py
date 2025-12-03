@@ -33,9 +33,9 @@ def load_trades(days: int = 30) -> list[dict]:
                         # Only get trade closes
                         if data.get("type") == "trade_close":
                             trades.append(data)
-                    except:
+                    except (json.JSONDecodeError, KeyError):
                         pass
-        except:
+        except IOError:
             pass
     
     return trades
@@ -142,7 +142,7 @@ def analyze_by_hour(trades: list[dict]):
             try:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                 by_hour[ts.hour].append(t)
-            except:
+            except ValueError:
                 pass
     
     print("\n📊 PERFORMANCE BY HOUR (UTC):")

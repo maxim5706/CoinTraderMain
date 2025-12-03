@@ -244,4 +244,7 @@ def create_test_router_with_mocks(
         config=config
     )
     
+    # Clear any persisted cooldowns for clean test state
+    router._order_cooldown.clear()
+    
     return router

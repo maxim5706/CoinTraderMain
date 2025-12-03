@@ -3,11 +3,14 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from core.logging_utils import get_logger
 from core.mode_config import ConfigurationManager
 from core.mode_configs import TradingMode
 from core.models import Position, PositionState, Side
 from core.paper_persistence import PaperPositionPersistence
 from core.live_persistence import LivePositionPersistence
+
+logger = get_logger(__name__)
 
 
 def _get_backend(mode: Optional[TradingMode] = None):
@@ -44,17 +47,22 @@ def sync_with_exchange(
     """
     Sync local positions with actual exchange holdings using Portfolio API.
     Only runs for live mode.
+    
+    Reconciliation:
+    - Adds positions found on exchange but not in local storage (orphans)
+    - Removes positions in local storage but not on exchange (stale)
+    - Logs detailed report of discrepancies
     """
     from core.config import settings
 
     resolved_mode = mode or ConfigurationManager.get_trading_mode()
 
     if resolved_mode != TradingMode.LIVE:
-        print("[SYNC] Paper mode - skipping exchange sync (using paper_positions.json)")
+        logger.info("[SYNC] Paper mode - skipping exchange sync")
         return positions
 
     if client is None:
-        print("[SYNC] No client, skipping exchange sync")
+        logger.warning("[SYNC] No client, skipping exchange sync")
         return positions
 
     try:
@@ -105,6 +113,11 @@ def sync_with_exchange(
                 continue
 
             symbol = f"{asset}-USD"
+            
+            # Skip ignored/delisted symbols
+            if symbol in settings.ignored_symbol_set:
+                logger.debug("[SYNC] Skipping ignored symbol: %s", symbol)
+                continue
 
             if isinstance(entry_obj, dict):
                 entry_price = float(entry_obj.get("value", 0) or 0)
@@ -145,6 +158,41 @@ def sync_with_exchange(
 
             real_holdings[symbol] = position
 
+        # Reconciliation: find discrepancies
+        local_symbols = set(positions.keys())
+        exchange_symbols = set(real_holdings.keys())
+        
+        orphaned = exchange_symbols - local_symbols  # On exchange, not in local
+        stale = local_symbols - exchange_symbols     # In local, not on exchange
+        matched = local_symbols & exchange_symbols   # In both
+        
+        # Log detailed reconciliation report
+        if orphaned or stale:
+            logger.warning(
+                "[SYNC] Position discrepancy detected: %d orphaned, %d stale, %d matched",
+                len(orphaned), len(stale), len(matched)
+            )
+            
+            for symbol in orphaned:
+                pos = real_holdings[symbol]
+                logger.warning(
+                    "[SYNC] ORPHANED: %s found on exchange ($%.2f) but not tracked locally - adding",
+                    symbol, pos.size_usd
+                )
+            
+            for symbol in stale:
+                pos = positions[symbol]
+                logger.warning(
+                    "[SYNC] STALE: %s tracked locally ($%.2f) but not on exchange - removing",
+                    symbol, pos.size_usd
+                )
+        else:
+            logger.info(
+                "[SYNC] Positions in sync: %d positions match exchange",
+                len(matched)
+            )
+        
+        # Apply reconciliation
         added = 0
         for symbol, pos in real_holdings.items():
             if symbol not in positions:
@@ -157,12 +205,14 @@ def sync_with_exchange(
                 del positions[symbol]
                 removed += 1
 
-        if not quiet:
-            print(f"[SYNC] Reconciled positions: +{added}, -{removed}")
+        if added or removed:
+            logger.info("[SYNC] Reconciled positions: +%d added, -%d removed", added, removed)
+            # Persist the reconciled positions
+            backend = _get_backend(resolved_mode)
+            backend.save_positions(positions)
 
         return positions
 
     except Exception as e:
-        if not quiet:
-            print(f"[SYNC] Error: {e}")
+        logger.error("[SYNC] Reconciliation failed: %s", e, exc_info=True)
         return positions

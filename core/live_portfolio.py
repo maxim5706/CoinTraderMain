@@ -1,5 +1,6 @@
 """Live portfolio manager backed by Coinbase client."""
 
+import time
 from typing import Dict, Optional
 
 from coinbase.rest import RESTClient
@@ -10,6 +11,10 @@ from core.portfolio import PortfolioSnapshot, portfolio_tracker
 from core.trading_interfaces import IPortfolioManager
 
 logger = get_logger(__name__)
+
+# Price cache to avoid rate limits
+_price_cache: Dict[str, tuple[float, float]] = {}  # symbol -> (price, timestamp)
+PRICE_CACHE_TTL = 30  # seconds
 
 
 class LivePortfolioManager(IPortfolioManager):
@@ -23,6 +28,7 @@ class LivePortfolioManager(IPortfolioManager):
         self._portfolio_value: float = 0.0
         self._usd_balance: float = 0.0
         self._product_info: dict[str, dict] = {}
+        self._last_portfolio_update: float = 0
         self._init_live_client()
         self.update_portfolio_state()
 
@@ -50,10 +56,36 @@ class LivePortfolioManager(IPortfolioManager):
     def portfolio_snapshot(self) -> Optional[PortfolioSnapshot]:
         return self._portfolio_snapshot
 
+    def _get_cached_price(self, symbol: str) -> float:
+        """Get price from cache or fetch if stale."""
+        now = time.time()
+        if symbol in _price_cache:
+            price, ts = _price_cache[symbol]
+            if now - ts < PRICE_CACHE_TTL:
+                return price
+        
+        try:
+            product = self._client.get_product(symbol)
+            price = float(getattr(product, "price", 0))
+            _price_cache[symbol] = (price, now)
+            return price
+        except Exception:
+            # Return cached price even if stale, or 0
+            if symbol in _price_cache:
+                return _price_cache[symbol][0]
+            return 0.0
+
     def update_portfolio_state(self) -> None:
         """Refresh USD balance, holdings, and snapshot."""
         if not self._client:
             return
+        
+        # Throttle updates to avoid rate limits (max once per 10 seconds)
+        now = time.time()
+        if now - self._last_portfolio_update < 10 and self._portfolio_value > 0:
+            return
+        self._last_portfolio_update = now
+        
         try:
             accounts = self._client.get_accounts()
             usd_bal = 0.0
@@ -72,19 +104,16 @@ class LivePortfolioManager(IPortfolioManager):
                     usdc_bal = value
                 elif value > 0.0001:
                     symbol = f"{currency}-USD"
-                    delisted = {"BOND-USD", "NU-USD", "CLV-USD", "SNX-USD"}
+                    delisted = {"BOND-USD", "NU-USD", "CLV-USD", "SNX-USD", "MANA-USD", "CGLD-USD"}
                     if symbol in delisted:
                         continue
 
-                    try:
-                        product = self._client.get_product(symbol)
-                        price = float(getattr(product, "price", 0))
+                    price = self._get_cached_price(symbol)
+                    if price > 0:
                         position_value = value * price
                         holdings_value += position_value
                         if position_value >= 1.0:
                             self._exchange_holdings[symbol] = position_value
-                    except Exception:
-                        continue
 
             self._usd_balance = usd_bal + usdc_bal
             self._portfolio_value = self._usd_balance + holdings_value

@@ -17,6 +17,10 @@ from .base import BaseStrategy, StrategySignal
 from .burst_flag import BurstFlagStrategy
 from .vwap_reclaim import VWAPReclaimStrategy
 from .mean_reversion import MeanReversionStrategy
+from .daily_momentum import DailyMomentumStrategy
+from .range_breakout import RangeBreakoutStrategy
+from .relative_strength import RelativeStrengthStrategy
+from .support_bounce import SupportBounceStrategy
 from .orchestrator import StrategyOrchestrator
 
 __all__ = [
@@ -25,5 +29,9 @@ __all__ = [
     "BurstFlagStrategy",
     "VWAPReclaimStrategy",
     "MeanReversionStrategy",
+    "DailyMomentumStrategy",
+    "RangeBreakoutStrategy",
+    "RelativeStrengthStrategy",
+    "SupportBounceStrategy",
     "StrategyOrchestrator",
 ]

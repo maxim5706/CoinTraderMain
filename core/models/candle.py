@@ -123,6 +123,30 @@ class CandleBuffer:
             return [c.close for c in self.candles_1d]
         return []
     
+    def get_volumes(self, timeframe: str = "1m") -> list[float]:
+        """Get volume values for the specified timeframe."""
+        if timeframe == "1m":
+            return [c.volume for c in self.candles_1m]
+        elif timeframe == "5m":
+            return [c.volume for c in self.candles_5m]
+        elif timeframe == "1h":
+            return [c.volume for c in self.candles_1h]
+        elif timeframe == "1d":
+            return [c.volume for c in self.candles_1d]
+        return []
+    
+    def get_ranges(self, timeframe: str = "1m") -> list[float]:
+        """Get high-low range values for the specified timeframe."""
+        if timeframe == "1m":
+            return [c.range for c in self.candles_1m]
+        elif timeframe == "5m":
+            return [c.range for c in self.candles_5m]
+        elif timeframe == "1h":
+            return [c.range for c in self.candles_1h]
+        elif timeframe == "1d":
+            return [c.range for c in self.candles_1d]
+        return []
+    
     def vwap(self, periods: int = 30) -> float:
         """Calculate VWAP over last N 1m candles."""
         if len(self.candles_1m) < periods:

@@ -110,9 +110,10 @@ async def test_order_router_respects_tier_warmth(monkeypatch):
 
 
 def test_health_check_flags_stale_ml():
-    data_dir = Path("data")
-    data_dir.mkdir(exist_ok=True)
-    snapshot_path = data_dir / "status.json"
+    from core.mode_paths import get_status_path
+
+    snapshot_path = get_status_path()
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
 
     original = snapshot_path.read_text() if snapshot_path.exists() else None
     snapshot = {

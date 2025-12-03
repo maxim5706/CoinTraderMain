@@ -113,7 +113,7 @@ def load_trades(logs_dir: Path, days: int = 30) -> List[Trade]:
                             ts_str = record.get('ts', '')
                             try:
                                 exit_time = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                            except:
+                            except ValueError:
                                 continue
                             
                             if exit_time.replace(tzinfo=None) < cutoff:

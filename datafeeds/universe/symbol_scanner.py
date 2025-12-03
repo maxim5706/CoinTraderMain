@@ -7,6 +7,7 @@ Clock C: Background slow context (every 10-60 minutes)
 """
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable
@@ -17,6 +18,99 @@ from core.logging_utils import get_logger
 from core.models import Candle
 
 logger = get_logger(__name__)
+
+
+# ============================================================
+# RATE LIMITER - Prevents 429 errors from Coinbase
+# ============================================================
+
+class RateLimiter:
+    """
+    Token bucket rate limiter with exponential backoff.
+    
+    Coinbase limits:
+    - Public endpoints: ~10 requests/second
+    - Private endpoints: ~15 requests/second
+    """
+    
+    def __init__(self, requests_per_second: float = 5.0, burst_size: int = 10):
+        self.rate = requests_per_second
+        self.burst_size = burst_size
+        self.tokens = burst_size
+        self.last_update = time.monotonic()
+        self._lock = None  # Created lazily if needed for async
+        self._sync_lock = False
+        
+        # Backoff tracking per symbol
+        self._backoff: dict[str, float] = {}  # symbol -> next_allowed_time
+        self._failures: dict[str, int] = {}   # symbol -> consecutive failures
+        
+    def _refill(self):
+        """Refill tokens based on elapsed time."""
+        now = time.monotonic()
+        elapsed = now - self.last_update
+        self.tokens = min(self.burst_size, self.tokens + elapsed * self.rate)
+        self.last_update = now
+    
+    def acquire_sync(self, symbol: str = "") -> float:
+        """
+        Synchronous acquire - returns wait time in seconds.
+        Returns 0 if can proceed immediately.
+        """
+        self._refill()
+        
+        # Check symbol-specific backoff
+        if symbol and symbol in self._backoff:
+            wait_until = self._backoff[symbol]
+            now = time.monotonic()
+            if now < wait_until:
+                return wait_until - now
+            else:
+                # Backoff expired, clear it
+                del self._backoff[symbol]
+                self._failures.pop(symbol, None)
+        
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return 0.0
+        else:
+            # Need to wait for a token
+            wait_time = (1 - self.tokens) / self.rate
+            return wait_time
+    
+    def wait_sync(self, symbol: str = ""):
+        """Synchronous wait - blocks until request can proceed."""
+        wait_time = self.acquire_sync(symbol)
+        if wait_time > 0:
+            time.sleep(wait_time)
+    
+    def record_success(self, symbol: str):
+        """Record successful request - clear backoff."""
+        self._failures.pop(symbol, None)
+        self._backoff.pop(symbol, None)
+    
+    def record_failure(self, symbol: str, is_rate_limit: bool = False):
+        """Record failed request - apply exponential backoff."""
+        failures = self._failures.get(symbol, 0) + 1
+        self._failures[symbol] = failures
+        
+        if is_rate_limit:
+            # Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
+            backoff_seconds = min(30, 2 ** (failures - 1))
+            self._backoff[symbol] = time.monotonic() + backoff_seconds
+            logger.debug("[RATE] %s backoff %ds after %d failures", symbol, backoff_seconds, failures)
+    
+    def get_stats(self) -> dict:
+        """Get rate limiter stats."""
+        return {
+            "tokens_available": self.tokens,
+            "symbols_in_backoff": len(self._backoff),
+            "total_failures": sum(self._failures.values()),
+        }
+
+
+# Global rate limiter instance
+_rate_limiter = RateLimiter(requests_per_second=5.0, burst_size=10)
 
 
 @dataclass
@@ -182,8 +276,8 @@ class SymbolScanner:
             # Filter to USD pairs
             usd_pairs = []
             for p in product_list:
-                product_id = getattr(p, 'product_id', None) or p.get('product_id', '')
-                quote = getattr(p, 'quote_currency_id', None) or p.get('quote_currency_id', '')
+                product_id = getattr(p, 'product_id', None) or (p.get('product_id', '') if isinstance(p, dict) else '')
+                quote = getattr(p, 'quote_currency_id', None) or (p.get('quote_currency_id', '') if isinstance(p, dict) else '')
                 
                 if quote == 'USD' and product_id:
                     usd_pairs.append(p)
@@ -193,21 +287,29 @@ class SymbolScanner:
             # Build universe with eligibility check
             eligible_count = 0
             for p in usd_pairs:
-                product_id = getattr(p, 'product_id', None) or p.get('product_id', '')
-                base = getattr(p, 'base_currency_id', None) or p.get('base_currency_id', '')
+                product_id = getattr(p, 'product_id', None) or (p.get('product_id', '') if isinstance(p, dict) else '')
+                base = getattr(p, 'base_currency_id', None) or (p.get('base_currency_id', '') if isinstance(p, dict) else '')
                 
                 # Get 24h stats
                 volume_24h = 0.0
                 price = 0.0
                 
                 try:
-                    # Try to get product stats
-                    vol_str = getattr(p, 'volume_24h', None) or p.get('volume_24h', '0')
-                    price_str = getattr(p, 'price', None) or p.get('price', '0')
+                    # Try to get product stats - Product objects use attributes, not dict access
+                    vol_str = getattr(p, 'volume_24h', None)
+                    price_str = getattr(p, 'price', None)
+                    
+                    # Fallback to dict access only if it's actually a dict
+                    if vol_str is None and isinstance(p, dict):
+                        vol_str = p.get('volume_24h', '0')
+                    if price_str is None and isinstance(p, dict):
+                        price_str = p.get('price', '0')
+                    
                     volume_24h = float(vol_str) if vol_str else 0
                     price = float(price_str) if price_str else 0
-                except:
-                    pass
+                except Exception as e:
+                    logger.warning("[SCANNER] Failed to parse product stats for %s: %s", product_id, e)
+                    continue
                 
                 # Calculate volume in USD
                 volume_usd = volume_24h * price if price > 0 else 0
@@ -479,11 +581,14 @@ class SymbolScanner:
         self,
         symbol: str,
         granularity_s: int = 60,
-        lookback_minutes: int = 90
+        lookback_minutes: int = 90,
+        max_retries: int = 3
     ) -> list[Candle]:
         """
         Fetch historical candles for warmup/backfill.
         Returns a list of Candle objects sorted oldest→newest.
+        
+        Includes rate limiting and exponential backoff for 429 errors.
         """
         # Map seconds to Coinbase granularity strings
         granularity_map = {
@@ -501,45 +606,75 @@ class SymbolScanner:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=lookback_minutes)
         
-        try:
-            # Use public endpoint (works without auth, no rate limit issues)
-            from coinbase.rest import RESTClient
-            public_client = RESTClient()  # Unauthenticated for public data
-            
-            resp = public_client.get_public_candles(
-                product_id=symbol,
-                start=str(int(start.timestamp())),
-                end=str(int(end.timestamp())),
-                granularity=granularity
-            )
-            raw = getattr(resp, "candles", None) or []
-            candles: list[Candle] = []
-            for c in raw:
-                # Coinbase returns objects with attributes
-                start_ts = getattr(c, "start", 0)
-                open_p = getattr(c, "open", 0)
-                high_p = getattr(c, "high", 0)
-                low_p = getattr(c, "low", 0)
-                close_p = getattr(c, "close", 0)
-                vol_p = getattr(c, "volume", 0)
+        for attempt in range(max_retries):
+            try:
+                # Rate limit before making request
+                _rate_limiter.wait_sync(symbol)
                 
-                # start is Unix timestamp as string
-                ts = datetime.fromtimestamp(int(start_ts), tz=timezone.utc)
+                # Use public endpoint (works without auth)
+                from coinbase.rest import RESTClient
+                public_client = RESTClient()  # Unauthenticated for public data
                 
-                candles.append(Candle(
-                    timestamp=ts,
-                    open=float(open_p),
-                    high=float(high_p),
-                    low=float(low_p),
-                    close=float(close_p),
-                    volume=float(vol_p)
-                ))
-            
-            candles.sort(key=lambda x: x.timestamp)
-            return candles
-        except Exception as e:
-            logger.warning("[SCANNER] History fetch failed for %s: %s", symbol, e, exc_info=True)
-            return []
+                resp = public_client.get_public_candles(
+                    product_id=symbol,
+                    start=str(int(start.timestamp())),
+                    end=str(int(end.timestamp())),
+                    granularity=granularity
+                )
+                raw = getattr(resp, "candles", None) or []
+                candles: list[Candle] = []
+                for c in raw:
+                    # Coinbase returns objects with attributes
+                    start_ts = getattr(c, "start", 0)
+                    open_p = getattr(c, "open", 0)
+                    high_p = getattr(c, "high", 0)
+                    low_p = getattr(c, "low", 0)
+                    close_p = getattr(c, "close", 0)
+                    vol_p = getattr(c, "volume", 0)
+                    
+                    # start is Unix timestamp as string
+                    ts = datetime.fromtimestamp(int(start_ts), tz=timezone.utc)
+                    
+                    candles.append(Candle(
+                        timestamp=ts,
+                        open=float(open_p),
+                        high=float(high_p),
+                        low=float(low_p),
+                        close=float(close_p),
+                        volume=float(vol_p)
+                    ))
+                
+                candles.sort(key=lambda x: x.timestamp)
+                
+                # Success - clear any backoff
+                _rate_limiter.record_success(symbol)
+                return candles
+                
+            except Exception as e:
+                error_str = str(e)
+                is_rate_limit = "429" in error_str or "Too Many Requests" in error_str
+                
+                # Record failure for backoff
+                _rate_limiter.record_failure(symbol, is_rate_limit=is_rate_limit)
+                
+                if is_rate_limit and attempt < max_retries - 1:
+                    # Wait with exponential backoff before retry
+                    backoff = min(30, 2 ** attempt)
+                    logger.debug("[SCANNER] Rate limited on %s, waiting %ds (attempt %d/%d)", 
+                               symbol, backoff, attempt + 1, max_retries)
+                    time.sleep(backoff)
+                    continue
+                elif attempt < max_retries - 1:
+                    # Non-rate-limit error, brief pause then retry
+                    time.sleep(0.5)
+                    continue
+                else:
+                    # Final attempt failed
+                    if not is_rate_limit:
+                        logger.warning("[SCANNER] History fetch failed for %s: %s", symbol, e)
+                    return []
+        
+        return []
     
     def should_refresh_universe(self) -> bool:
         """Check if universe needs refresh (every 30 min)."""

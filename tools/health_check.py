@@ -25,6 +25,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Tuple
 from dataclasses import dataclass, field
+from core.mode_paths import get_status_path
 
 # Ensure project root is on sys.path when executed as a script
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -129,7 +130,7 @@ def run_health_check() -> HealthStatus:
     
     try:
         # Optional snapshot from running bot
-        snapshot_path = Path("data/status.json")
+        snapshot_path = get_status_path()
         if snapshot_path.exists():
             try:
                 snap = json.loads(snapshot_path.read_text())

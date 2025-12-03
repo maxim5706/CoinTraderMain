@@ -441,9 +441,9 @@ class TestIntegration:
         
         router = OrderRouter(get_price_func=mock_price_func)
         
-        # Position counts should match
+        # Position counts should match (including dust positions)
         router_count = len(router.positions)
-        registry_count = len(router.position_registry.get_active_positions())
+        registry_count = len(router.position_registry.get_all_positions())
         
         assert router_count == registry_count
 

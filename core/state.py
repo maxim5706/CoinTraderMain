@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Deque, Tuple
 from core.models import Signal, SignalType, Position, CandleBuffer
+from core.events import OrderEvent
 
 
 @dataclass
@@ -59,6 +60,10 @@ class FocusCoinState:
     
     # Stage
     stage: str = "waiting"  # waiting, burst, impulse, flag, breakout, trap
+    
+    # Quick metrics for display
+    vol_spike: float = 0.0
+    trend_5m: float = 0.0
 
 
 @dataclass 
@@ -199,9 +204,18 @@ class BotState:
     live_balance_usd: float = 0.0
     daily_loss_limit_usd: float = 0.0
     
+    # Truth/sync (live)
+    portfolio_snapshot_age_s: float = 999.0   # Age of last live snapshot
+    sync_paused: bool = False                 # Pause entries until fresh truth
+    truth_stale: bool = False                 # Snapshot missing/old
+
     # Live log: deque of (timestamp, level, message)
     live_log: Deque[Tuple[datetime, str, str]] = field(
         default_factory=lambda: deque(maxlen=12)
+    )
+    # Recent order lifecycle events (open/partial/close)
+    recent_orders: Deque[OrderEvent] = field(
+        default_factory=lambda: deque(maxlen=20)
     )
     
     # Live population counters (reset every 5s)
@@ -245,6 +259,9 @@ class BotState:
     rejections_score: int = 0            # Rejected due to low score
     rejections_rr: int = 0               # Rejected due to R:R
     rejections_limits: int = 0           # Rejected due to position limits
+    
+    # Blocked signals (for dashboard display)
+    blocked_signals: list = field(default_factory=list)  # Recent blocked signals with reasons
     
     # Heartbeats (for "ethernet lights")
     heartbeat_ws: Optional[datetime] = None

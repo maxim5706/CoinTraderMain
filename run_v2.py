@@ -31,6 +31,7 @@ from core.profiles import apply_profile
 from core.models import Signal, SignalType, CandleBuffer
 from core.logger import log_candle_1m, log_burst, log_signal, utc_iso_str
 from core.trading_container import TradingContainer
+from core.events import MarketEventBus, TickEvent, CandleEvent, OrderEvent
 
 setup_logging()
 logger = get_logger(__name__)
@@ -43,6 +44,7 @@ from core.state import (
 )
 
 from datafeeds.collectors import CandleCollector, DynamicBackfill, MockCollector, RestPoller
+from datafeeds.coinbase_fetcher import fetch_history_windowed
 from datafeeds.universe import SymbolScanner, tier_scheduler
 from services.candle_store import candle_store
 from logic.strategies.orchestrator import StrategyOrchestrator
@@ -59,6 +61,7 @@ class TradingBotV2:
         self.mode = ConfigurationManager.get_trading_mode()
         self.config = ConfigurationManager.get_config_for_mode(self.mode)
         self.orchestrator = StrategyOrchestrator()
+        self.events = MarketEventBus(self.mode)
         self.scanner = SymbolScanner()
         self.collector: Optional[CandleCollector | MockCollector] = None
         self.router: Optional[OrderRouter] = None
@@ -98,12 +101,20 @@ class TradingBotV2:
         self.state.daily_loss_limit_usd = settings.daily_max_loss_usd
         self.state.startup_time = datetime.now(timezone.utc)
         self.state.paper_balance = getattr(settings, "paper_start_balance", 1000.0)
+        self.events.on_order(self._on_order_event)
     
     def _get_price(self, symbol: str) -> float:
         """Price getter for order router."""
         if self.collector:
             return self.collector.get_last_price(symbol)
         return 0.0
+
+    def _on_order_event(self, event: OrderEvent) -> None:
+        """Capture order lifecycle events for dashboard recent strip."""
+        try:
+            self.state.recent_orders.appendleft(event)
+        except Exception:
+            pass
     
     async def start(self):
         """Start the bot with three-clock architecture."""
@@ -177,6 +188,7 @@ class TradingBotV2:
             portfolio=container.get_portfolio_manager(),
             persistence=container.get_persistence(),
             stop_manager=container.get_stop_manager(),
+            event_bus=self.events,
         )
         
         # Connect candle collector for thesis invalidation checks
@@ -356,6 +368,12 @@ class TradingBotV2:
         
         # Persist to candle store (WS source)
         candle_store.write_candle(symbol, candle, "1m", source="ws")
+
+        # Emit normalized event for downstream consumers
+        if self.events:
+            self.events.emit_candle(
+                CandleEvent(symbol=symbol, candle=candle, tf="1m", source="ws")
+            )
         
         # Incremental update of live indicators (O(1) per candle)
         from features.live import feature_engine
@@ -395,6 +413,12 @@ class TradingBotV2:
         # Store latest spread for FAST mode decisions
         if spread_bps is not None:
             self._latest_spreads[symbol] = spread_bps
+
+        # Emit normalized tick event
+        if self.events:
+            self.events.emit_tick(
+                TickEvent(symbol=symbol, price=price, spread_bps=spread_bps, source="ws")
+            )
     
     def _on_ws_connect(self):
         """Callback when WebSocket connects."""
@@ -551,12 +575,14 @@ class TradingBotV2:
         total_1d = 0
         success_count = 0
         
-        for sym in symbols:
+        # Process symbols with progress tracking
+        num_symbols = len(symbols)
+        for idx, sym in enumerate(symbols):
             buffer = self.collector.get_buffer(sym)
             if buffer is None:
                 continue
             
-            # Fetch 1m candles
+            # Fetch 1m candles (most important for live trading)
             history_1m = self.scanner.fetch_history(sym, granularity_s=60, lookback_minutes=minutes_1m)
             for candle in history_1m:
                 buffer.add_1m(candle)
@@ -591,6 +617,14 @@ class TradingBotV2:
             
             if history_1m or history_5m:
                 success_count += 1
+            
+            # Progress indicator every 10 symbols
+            if (idx + 1) % 10 == 0:
+                print(f"\r[BACKFILL] Progress: {idx + 1}/{num_symbols} symbols...", end="", flush=True)
+        
+        # Clear progress line
+        if num_symbols >= 10:
+            print()
         
         if total_1m > 0 or total_5m > 0:
             logger.info(
@@ -656,7 +690,7 @@ class TradingBotV2:
         # Initialize REST poller
         if self.scanner._init_client():
             self.rest_poller = RestPoller(
-                fetch_candles_func=self.scanner.fetch_history,
+                fetch_candles_func=fetch_history_windowed,
                 fetch_spread_func=None  # Optional
             )
             self.rest_poller.on_candles = self._on_rest_candles
@@ -664,7 +698,7 @@ class TradingBotV2:
         # Initialize backfill service
         if self.scanner._init_client():
             self.backfill_service = DynamicBackfill(
-                fetch_candles_func=self.scanner.fetch_history,
+                fetch_candles_func=fetch_history_windowed,
                 min_candles_1m=20,
                 min_candles_5m=10
             )
@@ -934,6 +968,8 @@ class TradingBotV2:
                         try:
                             snap = portfolio_tracker.get_snapshot()
                             self.router._portfolio_snapshot = snap
+                            self.router._last_snapshot_at = datetime.now(timezone.utc)
+                            self.router._sync_degraded = False
                             self._last_portfolio_refresh = datetime.now(timezone.utc)
                             
                             # Sync positions with exchange (detect manual trades)
@@ -1081,8 +1117,8 @@ class TradingBotV2:
                     entry_score += 15
                 elif tier_name == "small":
                     entry_score += 10
-            except:
-                pass
+            except Exception as e:
+                logger.warning("[RADAR] Failed to score burst candidate %s: %s", m.symbol, e, exc_info=True)
             
             candidates.append(BurstCandidate(
                 symbol=m.symbol,
@@ -1108,7 +1144,10 @@ class TradingBotV2:
     def _write_status_snapshot(self):
         """Write lightweight BotState snapshot for external health checks."""
         try:
-            Path("data").mkdir(exist_ok=True)
+            from core.mode_paths import get_status_path
+
+            status_path = get_status_path(self.mode)
+            status_path.parent.mkdir(parents=True, exist_ok=True)
             snapshot = {
                 "ts": utc_iso_str(),
                 "ws_ok": self.state.ws_ok,
@@ -1138,7 +1177,7 @@ class TradingBotV2:
                 },
                 "positions": len(self.router.positions) if self.router else 0,
             }
-            Path("data/status.json").write_text(json.dumps(snapshot, indent=2))
+            status_path.write_text(json.dumps(snapshot, indent=2))
         except Exception:
             logger.warning("Failed to write status snapshot", exc_info=True)
     
@@ -1221,11 +1260,14 @@ class TradingBotV2:
             strat_signal = self.orchestrator.analyze(symbol, buffer, features, market_context)
             if strat_signal is None:
                 self._last_strategy_signals.pop(symbol, None)
+                # Track as "no signal" - strategy didn't find entry opportunity
+                self.state.rejections_score += 1
                 continue
             
             signal = self._adapt_strategy_signal(symbol, strat_signal, features, market_context, buffer)
             if signal is None:
                 self._last_strategy_signals.pop(symbol, None)
+                self.state.rejections_score += 1
                 continue
             
             self._last_strategy_signals[symbol] = strat_signal
@@ -1278,7 +1320,10 @@ class TradingBotV2:
             
             # Check for entry (both normal and FAST breakouts)
             if signal.type in [SignalType.FLAG_BREAKOUT, SignalType.FAST_BREAKOUT]:
-                if not self.router.has_position(symbol):
+                if self.router.has_position(symbol):
+                    # Already holding - track as limit rejection
+                    self.state.rejections_limits += 1
+                else:
                     position = await self.router.open_position(signal)
                     if position:
                         self.orchestrator.reset(symbol)
@@ -1540,6 +1585,21 @@ class TradingBotV2:
         # Use real portfolio snapshot if available
         use_snapshot = (self.mode == TradingMode.LIVE) and bool(self.router._portfolio_snapshot)
         
+        # Truth/snapshot freshness for dashboard
+        if self.mode == TradingMode.LIVE:
+            if self.router._last_snapshot_at:
+                age = (datetime.now(timezone.utc) - self.router._last_snapshot_at).total_seconds()
+                self.state.portfolio_snapshot_age_s = age
+                self.state.truth_stale = age > 20
+            else:
+                self.state.portfolio_snapshot_age_s = 999.0
+                self.state.truth_stale = True
+            self.state.sync_paused = getattr(self.router, "_sync_degraded", False)
+        else:
+            self.state.portfolio_snapshot_age_s = 0.0
+            self.state.sync_paused = False
+            self.state.truth_stale = False
+        
         if use_snapshot:
             snap = self.router._portfolio_snapshot
             self.state.unrealized_pnl = snap.total_unrealized_pnl
@@ -1663,22 +1723,29 @@ class TradingBotV2:
     async def _display_loop(self):
         """Update display periodically."""
         from rich.live import Live
+        from core.logging_utils import suppress_console_logging
         
         await asyncio.sleep(2)
         
-        with Live(
-            self.dashboard.render_full(),
-            console=self.dashboard.console,
-            refresh_per_second=2,
-            screen=True
-        ) as live:
-            while self._running:
-                try:
-                    live.update(self.dashboard.render_full())
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    logger.debug("Dashboard refresh failed; retrying", exc_info=True)
-                    await asyncio.sleep(1)
+        # Suppress console logging while TUI is active (logs still go to file)
+        suppress_console_logging(True)
+        
+        try:
+            with Live(
+                self.dashboard.render_full(),
+                console=self.dashboard.console,
+                refresh_per_second=2,
+                screen=True
+            ) as live:
+                while self._running:
+                    try:
+                        live.update(self.dashboard.render_full())
+                        await asyncio.sleep(0.5)
+                    except Exception:
+                        await asyncio.sleep(1)
+        finally:
+            # Restore console logging when TUI exits
+            suppress_console_logging(False)
 
 
 def main():
@@ -1733,8 +1800,9 @@ Examples:
         from importlib import reload
         import core.config
         reload(core.config)
-        # Re-import settings with new mode
-        from core.config import settings
+    
+    # Import settings (after any reload)
+    from core.config import settings
     
     print(f"🎯 Trading Mode: {settings.trading_mode}")
     print(f"🔑 API Keys: {'Configured' if settings.coinbase_api_key else 'Missing'}")

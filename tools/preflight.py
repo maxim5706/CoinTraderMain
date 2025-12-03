@@ -91,7 +91,7 @@ def get_account_balance(currency: str = "USD") -> float:
                     if hasattr(acc, 'available_balance'):
                         return float(acc.available_balance.value)
         return 0.0
-    except:
+    except Exception:
         return 0.0
 
 

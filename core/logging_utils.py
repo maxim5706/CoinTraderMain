@@ -10,6 +10,23 @@ LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _HANDLER_NAME = "cointrader-root-handler"
 
+# Global flag to suppress console output when TUI is active
+_console_suppressed = False
+
+
+def suppress_console_logging(suppress: bool = True):
+    """Suppress console logging (for TUI mode)."""
+    global _console_suppressed
+    _console_suppressed = suppress
+    
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if getattr(handler, "name", "") == _HANDLER_NAME:
+            if suppress:
+                handler.setLevel(logging.CRITICAL + 1)  # Suppress all
+            else:
+                handler.setLevel(_resolve_level(None))
+
 
 def _resolve_level(level: str | int | None) -> int:
     if level is None:
@@ -37,7 +54,7 @@ def setup_logging(level: str | int | None = None) -> logging.Logger:
     root.setLevel(resolved_level)
     for handler in root.handlers:
         if getattr(handler, "name", "") == _HANDLER_NAME:
-            handler.setLevel(resolved_level)
+            handler.setLevel(resolved_level if not _console_suppressed else logging.CRITICAL + 1)
 
     root.propagate = False
     return root

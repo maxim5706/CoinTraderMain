@@ -72,7 +72,9 @@ def test_orchestrator_selects_highest_score():
     
     assert result is not None
     assert result.strategy_id == "strategy_2"
-    assert result.edge_score_base == 70
+    # Score is boosted by confluence (2 strategies agreed = +15)
+    assert result.edge_score_base == 85  # 70 + 15 confluence boost
+    assert result.confluence_count == 2
 
 
 def test_orchestrator_returns_none_when_no_signals():

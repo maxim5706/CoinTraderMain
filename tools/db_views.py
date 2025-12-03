@@ -114,13 +114,13 @@ def main():
             try:
                 result = con.execute(f"SELECT COUNT(*) FROM {view}").fetchone()
                 row_counts[view] = result[0]
-            except:
+            except Exception:
                 row_counts[view] = 0
         
         print("\n[duckdb] Row counts:")
         for view, count in row_counts.items():
             print(f"  {view}: {count:,}")
-    except:
+    except Exception:
         pass
     
     con.close()

@@ -8,6 +8,7 @@ Handles:
 4. Order tracking and reconciliation
 5. Retry logic with exponential backoff
 6. Rate limiting
+7. Understands some positions can't be sold delisted, too small of value to make minimum sale fee.
 """
 
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from typing import Optional, Dict, List
 from enum import Enum
 import json
 import time
+from decimal import Decimal, ROUND_HALF_UP
 
 from core.config import settings
 from execution.order_utils import (
@@ -219,10 +221,43 @@ class OrderManager:
         if not self._client:
             print("[ORDERS] No client, can't place stop order")
             return None
+
+        # Resolve price increment (default 1 cent for USD pairs)
+        price_increment = 0.01
+        try:
+            product = self._client.get_product(symbol)
+            price_increment = float(
+                getattr(product, "price_increment", None)
+                or getattr(product, "quote_increment", 0.01)
+                or 0.01
+            )
+        except Exception:
+            price_increment = 0.01
+
+        def _quantize(value: float) -> float:
+            """Round price to exchange-supported precision."""
+            try:
+                inc = Decimal(str(price_increment))
+                return float(Decimal(str(value)).quantize(inc, rounding=ROUND_HALF_UP))
+            except Exception:
+                # Fallback to simple rounding if Decimal fails
+                return round(value / price_increment) * price_increment if price_increment else value
         
         # Default limit price with wider gap for flash crashes (2% below stop)
         if limit_price is None:
             limit_price = calculate_limit_price(stop_price)  # 0.98 = 2% gap
+
+        # Quantize prices to meet Coinbase precision requirements
+        stop_price = _quantize(stop_price)
+        limit_price = _quantize(limit_price)
+
+        # Deduplicate: if an open stop already exists at effectively the same price, reuse it
+        existing_stop = self.get_stop_order(symbol)
+        if existing_stop and existing_stop.status == OrderStatus.OPEN:
+            # Consider it the same if within one price increment
+            if abs(existing_stop.stop_price - stop_price) < price_increment:
+                print(f"[ORDERS] Reusing existing stop for {symbol} @ ${existing_stop.stop_price:.4f}")
+                return existing_stop.order_id
         
         client_order_id = f"stop_{symbol}_{int(datetime.now().timestamp())}"
         
@@ -237,13 +272,19 @@ class OrderManager:
                     product_id=symbol,
                     base_size=str(qty),
                     stop_price=str(stop_price),
-                    limit_price=str(limit_price)
+                    limit_price=str(limit_price),
+                    # Required by Advanced Trade API to indicate stop direction
+                    stop_direction="STOP_DIRECTION_STOP_DOWN",
                 )
                 
                 # Get order ID from response
                 order_id = getattr(order, 'order_id', None)
                 if not order_id and hasattr(order, 'success_response'):
-                    order_id = getattr(order.success_response, 'order_id', None)
+                    sr = getattr(order, 'success_response', None)
+                    order_id = (
+                        getattr(sr, 'order_id', None)
+                        or (sr.get('order_id') if isinstance(sr, dict) else None)
+                    )
                 if not order_id and isinstance(order, dict):
                     order_id = order.get('order_id') or order.get('success_response', {}).get('order_id')
                 
@@ -284,7 +325,17 @@ class OrderManager:
                     
                     return order_id
                 else:
-                    print(f"[ORDERS] Stop order placed but no ID returned")
+                    # Surface error details when available
+                    err_detail = None
+                    if hasattr(order, "error_response"):
+                        err_detail = getattr(order, "error_response", None)
+                    elif isinstance(order, dict) and order.get("error_response"):
+                        err_detail = order.get("error_response")
+
+                    if err_detail:
+                        print(f"[ORDERS] Stop order rejected: {err_detail}")
+                    else:
+                        print(f"[ORDERS] Stop order placed but no ID returned")
                     return None
                     
             except Exception as e:

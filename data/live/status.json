@@ -1,29 +1,29 @@
 {
-  "ts": "2025-12-02T23:49:49.886Z",
+  "ts": "2025-12-03T19:21:03.098Z",
   "ws_ok": true,
   "ws_last_age": 0.0,
   "ws_reconnect_count": 0,
   "mode": "live",
   "profile": "prod",
   "universe": {
-    "eligible": 111,
-    "warm": 101,
-    "cold": 10,
+    "eligible": 112,
+    "warm": 104,
+    "cold": 8,
     "tier1": 75,
     "tier2": 15,
-    "tier3": 21
+    "tier3": 22
   },
   "ml": {
-    "fresh_pct": 0.0,
-    "total_cached": 0
+    "fresh_pct": 100.0,
+    "total_cached": 75
   },
   "rejections": {
-    "spread": 0,
+    "spread": 155,
     "warmth": 0,
     "regime": 0,
-    "score": 0,
+    "score": 116,
     "rr": 0,
-    "limits": 0
+    "limits": 200
   },
-  "positions": 19
+  "positions": 4
 }

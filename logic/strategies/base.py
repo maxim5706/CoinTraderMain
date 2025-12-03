@@ -65,6 +65,9 @@ class StrategySignal:
     bb_position: float = 0.5  # 0=lower band, 1=upper band
     rsi: float = 50.0
     
+    # Confluence (set by orchestrator)
+    confluence_count: int = 1  # How many strategies agreed
+    
     @property
     def is_valid(self) -> bool:
         """Check if signal is actionable."""

@@ -44,6 +44,11 @@ class Position:
     ml_score_entry: float = 0.0     # ML score at entry
     ml_score_current: float = 0.0   # Current ML score
     
+    # Trailing stop
+    highest_price: float = 0.0      # Highest price seen since entry
+    trailing_stop_pct: float = 0.0  # Trailing stop % (0 = disabled)
+    trailing_active: bool = False   # Is trailing stop active?
+    
     @property
     def confidence_trend(self) -> str:
         """Is confidence rising, falling, or stable?"""
