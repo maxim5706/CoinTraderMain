@@ -165,7 +165,7 @@ def run_health_check() -> HealthStatus:
         # Only check live state if no snapshot found (bot not running)
         if not snapshot_path.exists():
             from logic.intelligence import intelligence
-            from features.live import feature_engine
+            from logic.live_features import feature_engine
             from datafeeds.universe import tier_scheduler
             
             # ML cache status from live state

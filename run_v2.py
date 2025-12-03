@@ -376,7 +376,7 @@ class TradingBotV2:
             )
         
         # Incremental update of live indicators (O(1) per candle)
-        from features.live import feature_engine
+        from logic.live_features import feature_engine
         from logic.intelligence import intelligence
         
         vwap = buffer.vwap(30) if buffer and len(buffer.candles_1m) >= 30 else 0.0
@@ -612,7 +612,7 @@ class TradingBotV2:
             
             # Update feature engine with higher TF data
             if history_1h or history_1d:
-                from features.live import feature_engine
+                from logic.live_features import feature_engine
                 feature_engine.update_higher_tf(sym, history_1h or [], history_1d or [])
             
             if history_1m or history_5m:
@@ -777,7 +777,7 @@ class TradingBotV2:
         
         # Update feature engine with higher TF data
         if candles_1h or candles_1d:
-            from features.live import feature_engine
+            from logic.live_features import feature_engine
             feature_engine.update_higher_tf(symbol, candles_1h or [], candles_1d or [])
         
         # Update tier scheduler

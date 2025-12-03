@@ -10,7 +10,7 @@ from core.state import BotState
 from datafeeds.collectors.candle_collector import CandleCollector
 from datafeeds.universe.tiers import TierConfig, TierScheduler
 from execution.order_router import OrderRouter
-from features.live.live_features import LiveFeatureEngine, LiveIndicators
+from logic.live_features import LiveFeatureEngine, LiveIndicators
 from logic.intelligence import CANONICAL_GATE_ORDER
 from tools.health_check import check_startup_health, run_health_check
 

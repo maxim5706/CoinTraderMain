@@ -68,7 +68,7 @@ def test_rejection_counter_no_state():
 
 def test_ml_staleness():
     """Verify ML staleness detection works."""
-    from features.live import LiveMLResult
+    from logic.live_features import LiveMLResult
     
     # Fresh ML
     fresh = LiveMLResult(symbol='TEST', raw_score=0.5, confidence=0.7)
@@ -85,7 +85,7 @@ def test_ml_staleness():
 def test_intelligence_rejects_stale_ml():
     """Verify intelligence.get_live_ml returns None for stale ML."""
     from logic.intelligence import intelligence
-    from features.live import LiveMLResult
+    from logic.live_features import LiveMLResult
     
     # Set stale ML
     stale = LiveMLResult(symbol='STALE-USD', raw_score=0.5, confidence=0.7)
@@ -140,7 +140,7 @@ def test_health_check_runs():
 
 def test_indicator_staleness():
     """Verify LiveIndicators.is_stale works correctly."""
-    from features.live import LiveIndicators
+    from logic.live_features import LiveIndicators
     
     # Fresh indicators
     fresh = LiveIndicators(symbol='TEST-USD')
@@ -155,7 +155,7 @@ def test_indicator_staleness():
 def test_intelligence_rejects_stale_indicators():
     """Verify intelligence.get_live_indicators returns None for stale indicators."""
     from logic.intelligence import intelligence
-    from features.live import LiveIndicators
+    from logic.live_features import LiveIndicators
     
     # Set stale indicators
     stale = LiveIndicators(symbol='STALE-IND-USD')

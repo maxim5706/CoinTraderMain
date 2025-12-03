@@ -386,7 +386,7 @@ class IntelligenceLayer:
         
         if indicators.is_ready:
             try:
-                from features.live import live_scorer
+                from logic.live_features import live_scorer
                 self.live_ml[symbol] = live_scorer.score_from_indicators(indicators)
             except Exception as e:
                 print(f"[ML] Error scoring {symbol}: {e}")

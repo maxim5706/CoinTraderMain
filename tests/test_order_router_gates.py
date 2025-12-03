@@ -8,7 +8,7 @@ from core.models import Signal, SignalType
 from core.state import BotState
 from execution.order_router import OrderRouter
 from logic.intelligence import EntryScore, intelligence
-from features.live import LiveIndicators, LiveMLResult, live_scorer
+from logic.live_features import LiveIndicators, LiveMLResult, live_scorer
 from datafeeds.universe import tier_scheduler
 
 
