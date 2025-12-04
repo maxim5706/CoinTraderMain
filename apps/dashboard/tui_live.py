@@ -70,8 +70,22 @@ class LiveScanner(Static):
         for c in candidates:
             sym = getattr(c, "symbol", "?").replace("-USD", "")[:6]
             score = getattr(c, "entry_score", 0) or getattr(c, "score", 0)
-            strat = getattr(c, "strategy", "")[:6] or getattr(c, "strategy_id", "?")[:6]
             trend = getattr(c, "trend_5m", 0)
+            
+            # Infer strategy from metrics (same as old dashboard)
+            strat = getattr(c, "strategy", "") or getattr(c, "strategy_id", "")
+            if not strat:
+                burst = getattr(c, "burst_score", 0)
+                vol = getattr(c, "vol_spike", 0)
+                if burst >= 3:
+                    strat = "burst"
+                elif vol >= 5:
+                    strat = "impulse"
+                elif trend > 1.0 and vol < 2:
+                    strat = "daily"
+                else:
+                    strat = "scan"
+            strat = strat[:6]
             
             score_color = "green" if score >= 80 else "yellow" if score >= 70 else "dim"
             trend_color = "green" if trend > 0 else "red" if trend < 0 else "dim"
