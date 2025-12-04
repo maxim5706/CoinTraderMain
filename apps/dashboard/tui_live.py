@@ -92,9 +92,13 @@ class LivePositions(Static):
     
     def render(self) -> str:
         lines = []
-        # Get positions from dict (router uses dict, not list)
-        pos_dict = getattr(self.bot_state, "positions", {}) or {}
-        positions = list(pos_dict.values())[:6]
+        # Get positions (run_v2 sets as list of PositionDisplay namedtuples)
+        raw_positions = getattr(self.bot_state, "positions", []) or []
+        # Handle both dict and list
+        if isinstance(raw_positions, dict):
+            positions = list(raw_positions.values())[:6]
+        else:
+            positions = list(raw_positions)[:6]
         
         if not positions:
             return "[dim]No positions[/]"
@@ -104,22 +108,16 @@ class LivePositions(Static):
         
         for p in positions:
             sym = getattr(p, "symbol", "?").replace("-USD", "")[:6]
-            # Use actual position properties
-            entry_cost = getattr(p, "entry_cost_usd", 0) or getattr(p, "cost_basis", 0)
-            entry_price = getattr(p, "entry_price", 0)
-            size_qty = getattr(p, "size_qty", 0)
-            
-            # Estimate current value (use entry if no live price available)
-            value = entry_cost if entry_cost > 0 else (entry_price * size_qty)
-            conf = getattr(p, "confidence", 70)
-            
-            # Calculate PnL if we have price info
-            pnl = 0  # Default, would need live price for accurate PnL
+            # PositionDisplay has: size_usd, unrealized_pnl, unrealized_pct
+            value = getattr(p, "size_usd", 0)
+            pnl_pct = getattr(p, "unrealized_pct", 0)
+            pnl_usd = getattr(p, "unrealized_pnl", 0)
             
             total_value += value
+            total_pnl += pnl_usd
             
-            pnl_color = "green" if pnl > 0 else "red" if pnl < 0 else "dim"
-            lines.append(f"[cyan]{sym:6}[/] ${value:5.0f} [{pnl_color}]{pnl:+5.1f}%[/]")
+            pnl_color = "green" if pnl_pct > 0 else "red" if pnl_pct < 0 else "dim"
+            lines.append(f"[cyan]{sym:6}[/] ${value:5.0f} [{pnl_color}]{pnl_pct:+5.1f}%[/]")
         
         lines.append(f"[dim]───────────────────[/]")
         pnl_color = "green" if total_pnl >= 0 else "red"
@@ -201,25 +199,32 @@ class LiveHealth(Static):
     
     def render(self) -> str:
         s = self.bot_state
-        runtime = getattr(s, "runtime_seconds", 0) // 60
-        eligible = getattr(s, "universe_eligible", 0)
+        # Calculate runtime from startup_time
+        startup = getattr(s, "startup_time", None)
+        if startup:
+            runtime = int((datetime.now(timezone.utc) - startup).total_seconds() // 60)
+        else:
+            runtime = 0
+        
+        # Universe stats (nested in universe object)
+        uni = getattr(s, "universe", None)
+        eligible = getattr(uni, "eligible_symbols", 0) if uni else 0
+        streams = getattr(uni, "symbols_streaming", 0) if uni else 0
+        
         warm = getattr(s, "warm_symbols", 0)
-        cold = eligible - warm if eligible else 0
-        streams = getattr(s, "stream_count", 0)
+        cold = getattr(s, "cold_symbols", 0)
         
-        budget_used = getattr(s, "budget_used", 0)
-        budget_total = getattr(s, "budget_total", 0)
-        
-        ml_fresh = getattr(s, "ml_freshness_pct", 0)
-        ml_color = "green" if ml_fresh > 80 else "yellow" if ml_fresh > 50 else "red"
+        # Budget from actual fields
+        budget_total = getattr(s, "bot_budget_usd", 0)
+        exposure = getattr(s, "exposure_pct", 0)
+        budget_used = budget_total * exposure if budget_total else 0
         
         return (
             f"Runtime: {runtime}m\n"
             f"Universe: {eligible}\n"
             f"Warm: {warm} | Cold: {cold}\n"
             f"Streams: {streams}\n"
-            f"Budget: ${budget_used:.0f}/${budget_total:.0f}\n"
-            f"ML: [{ml_color}]{ml_fresh:.0f}%[/]"
+            f"Budget: ${budget_used:.0f}/${budget_total:.0f}"
         )
 
 
