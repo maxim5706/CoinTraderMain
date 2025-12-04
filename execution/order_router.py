@@ -564,6 +564,12 @@ class OrderRouter:
                 self.state.rejections_limits += 1
             elif reason == "spread":
                 self.state.rejections_spread += 1
+            
+            # Log important rejections to TUI (skip noisy score rejections)
+            if reason in ("spread", "rr", "limits", "regime") and symbol:
+                sym_short = symbol.replace("-USD", "")
+                detail = details.get("reason", reason) if details else reason
+                self.state.log(f"⛔ {sym_short} {detail}", "GATE")
         
         # Log for post-analysis
         from core.logger import log_rejection, utc_iso_str

@@ -1,5 +1,5 @@
 {
-  "ts": "2025-12-04T01:41:49.789Z",
+  "ts": "2025-12-04T01:50:26.589Z",
   "ws_ok": true,
   "ws_last_age": 0.0,
   "ws_reconnect_count": 0,
@@ -8,22 +8,22 @@
   "universe": {
     "eligible": 109,
     "warm": 105,
-    "cold": 3,
+    "cold": 4,
     "tier1": 75,
     "tier2": 15,
-    "tier3": 18
+    "tier3": 19
   },
   "ml": {
-    "fresh_pct": 98.68421052631578,
-    "total_cached": 76
+    "fresh_pct": 0.0,
+    "total_cached": 0
   },
   "rejections": {
-    "spread": 48,
+    "spread": 3,
     "warmth": 0,
     "regime": 0,
-    "score": 3073,
-    "rr": 2638,
-    "limits": 178
+    "score": 447,
+    "rr": 174,
+    "limits": 1
   },
-  "positions": 7
+  "positions": 4
 }

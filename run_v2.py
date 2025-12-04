@@ -1312,6 +1312,12 @@ class TradingBotV2:
             
             self._last_strategy_signals[symbol] = strat_signal
             
+            # Log strategy signal to TUI
+            sym_short = symbol.replace("-USD", "")
+            score = int(strat_signal.edge_score_base)
+            strat_name = strat_signal.strategy_id
+            self.state.log(f"{sym_short} {strat_name} score={score}", "STRAT")
+            
             # Log signal to file (Layer D)
             signal_record = {
                 "ts": utc_iso_str(signal.timestamp),

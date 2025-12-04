@@ -198,11 +198,21 @@ class LiveSignal(Static):
             if action == "WAIT":
                 # Color stage for visibility
                 stage_color = "green" if stage in ("impulse", "flag") else "yellow" if stage == "burst" else "dim"
+                # Get warmup info
+                warmup_1m = getattr(focus_coin, "warmup_1m", 0) if focus_coin else 0
+                warmup_5m = getattr(focus_coin, "warmup_5m", 0) if focus_coin else 0
+                
+                # Show warmup if not ready, else show confidence
+                if warmup_1m < 10 or warmup_5m < 3:
+                    extra = f"Warmup: 1m:{warmup_1m}/10 5m:{warmup_5m}/3"
+                else:
+                    extra = f"Conf: {conf:.0f}%"
+                
                 return (
                     f"[yellow]⏳ WAITING[/]\n"
                     f"Focus: [cyan]{focus}[/] [{stage_color}]{stage}[/]\n"
                     f"{reason or 'Scanning...'}\n"
-                    f"Conf: {conf:.0f}%"
+                    f"{extra}"
                 )
             elif action in ("BUY", "ENTER_LONG", "ENTER_LONG_FAST"):
                 # Only show prices if they look valid (not 0 and reasonable)
@@ -346,10 +356,14 @@ class LiveLogs(Static):
             msg_display = msg[:80]
             
             if lvl == "TRADE":
-                lines.append(f"[green]{ts_str}[/] {msg_display}")
-            elif lvl == "WARN":
-                lines.append(f"[yellow]{ts_str}[/] {msg_display}")
-            elif lvl == "ERROR":
+                lines.append(f"[green bold]{ts_str}[/] [green]{msg_display}[/]")
+            elif lvl == "STRAT":
+                lines.append(f"[cyan]{ts_str}[/] [cyan]{msg_display}[/]")
+            elif lvl == "GATE":
+                lines.append(f"[yellow]{ts_str}[/] [yellow]{msg_display}[/]")
+            elif lvl == "FOCUS":
+                lines.append(f"[magenta]{ts_str}[/] {msg_display}")
+            elif lvl in ("WARN", "ERROR"):
                 lines.append(f"[red]{ts_str}[/] {msg_display}")
             else:
                 lines.append(f"[dim]{ts_str}[/] {msg_display}")
