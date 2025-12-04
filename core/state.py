@@ -211,7 +211,7 @@ class BotState:
 
     # Live log: deque of (timestamp, level, message)
     live_log: Deque[Tuple[datetime, str, str]] = field(
-        default_factory=lambda: deque(maxlen=12)
+        default_factory=lambda: deque(maxlen=50)  # Larger buffer for TUI
     )
     # Recent order lifecycle events (open/partial/close)
     recent_orders: Deque[OrderEvent] = field(

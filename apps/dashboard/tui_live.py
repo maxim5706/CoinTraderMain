@@ -328,7 +328,8 @@ class LiveLogs(Static):
         self._last_count = 0
     
     def render(self) -> str:
-        logs = list(getattr(self.bot_state, "live_log", []))[-15:]
+        # Show more logs to fill the panel
+        logs = list(getattr(self.bot_state, "live_log", []))[-25:]
         
         if not logs:
             return "[dim]Waiting for events...[/]"
@@ -336,15 +337,17 @@ class LiveLogs(Static):
         lines = []
         for ts, lvl, msg in logs:
             ts_str = ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts)[:8]
+            # Allow longer messages to use panel width
+            msg_display = msg[:80]
             
             if lvl == "TRADE":
-                lines.append(f"[green]{ts_str}[/] {msg[:50]}")
+                lines.append(f"[green]{ts_str}[/] {msg_display}")
             elif lvl == "WARN":
-                lines.append(f"[yellow]{ts_str}[/] {msg[:50]}")
+                lines.append(f"[yellow]{ts_str}[/] {msg_display}")
             elif lvl == "ERROR":
-                lines.append(f"[red]{ts_str}[/] {msg[:50]}")
+                lines.append(f"[red]{ts_str}[/] {msg_display}")
             else:
-                lines.append(f"[dim]{ts_str}[/] {msg[:50]}")
+                lines.append(f"[dim]{ts_str}[/] {msg_display}")
         
         return "\n".join(lines)
 

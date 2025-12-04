@@ -26,6 +26,15 @@ def suppress_console_logging(suppress: bool = True):
                 handler.setLevel(logging.CRITICAL + 1)  # Suppress all
             else:
                 handler.setLevel(_resolve_level(None))
+    
+    # Also suppress external library loggers that print to console
+    external_loggers = ["coinbase", "coinbase.RESTClient", "urllib3", "httpx"]
+    for name in external_loggers:
+        ext_logger = logging.getLogger(name)
+        if suppress:
+            ext_logger.setLevel(logging.CRITICAL + 1)
+        else:
+            ext_logger.setLevel(logging.WARNING)
 
 
 def _resolve_level(level: str | int | None) -> int:
