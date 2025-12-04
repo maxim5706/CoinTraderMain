@@ -61,15 +61,16 @@ class LiveScanner(Static):
     
     def render(self) -> str:
         lines = []
-        candidates = list(getattr(self.bot_state, "candidates", []))[:8]
+        # Use burst_leaderboard (same as old dashboard)
+        candidates = list(getattr(self.bot_state, "burst_leaderboard", []))[:8]
         
         if not candidates:
             return "[dim]Scanning...[/]"
         
         for c in candidates:
             sym = getattr(c, "symbol", "?").replace("-USD", "")[:6]
-            score = getattr(c, "score", 0)
-            strat = getattr(c, "strategy_id", "?")[:6]
+            score = getattr(c, "entry_score", 0) or getattr(c, "score", 0)
+            strat = getattr(c, "strategy", "")[:6] or getattr(c, "strategy_id", "?")[:6]
             trend = getattr(c, "trend_5m", 0)
             
             score_color = "green" if score >= 80 else "yellow" if score >= 70 else "dim"
