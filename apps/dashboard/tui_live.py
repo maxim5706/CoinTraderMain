@@ -67,8 +67,14 @@ class LiveScanner(Static):
         # Show up to 15 candidates for full watchlist
         candidates = list(getattr(self.bot_state, "burst_leaderboard", []))[:15]
         
+        # Get universe stats for empty state message
+        uni = getattr(self.bot_state, "universe", None)
+        eligible = getattr(uni, "eligible_symbols", 0) if uni else 0
+        warm = getattr(self.bot_state, "warm_symbols", 0)
+        
         if not candidates:
-            return "[dim]Scanning 108 symbols...[/]"
+            # Show what we're doing while waiting for candidates
+            return f"[dim]Scanning {eligible} symbols...\nWarm: {warm}[/]"
         
         # Header
         lines.append("[dim]SYM    SCR STRAT  VOL   TREND[/]")
@@ -170,45 +176,63 @@ class LiveSignal(Static):
     def render(self) -> str:
         sig = getattr(self.bot_state, "current_signal", None)
         
-        # Get focus symbol from focus_coin object
+        # Get focus symbol and stage from focus_coin object
         focus_coin = getattr(self.bot_state, "focus_coin", None)
         focus = getattr(focus_coin, "symbol", "").replace("-USD", "") if focus_coin else "—"
+        stage = getattr(focus_coin, "stage", "scan") if focus_coin else "scan"
         
         # Show current action/reason
         if sig:
             action = getattr(sig, "action", "WAIT")
-            reason = getattr(sig, "reason", "")[:30]
+            reason = getattr(sig, "reason", "")[:35]
             conf = getattr(sig, "confidence", 0)
             entry = getattr(sig, "entry_price", 0)
             stop = getattr(sig, "stop_price", 0)
             tp1 = getattr(sig, "tp1_price", 0)
             
             if action == "WAIT":
+                # Color stage for visibility
+                stage_color = "green" if stage in ("impulse", "flag") else "yellow" if stage == "burst" else "dim"
                 return (
                     f"[yellow]⏳ WAITING[/]\n"
-                    f"Focus: {focus}\n"
-                    f"Reason: {reason or 'Scanning...'}\n"
+                    f"Focus: [cyan]{focus}[/] [{stage_color}]{stage}[/]\n"
+                    f"{reason or 'Scanning...'}\n"
                     f"Conf: {conf:.0f}%"
                 )
-            elif action in ("BUY", "ENTER_LONG"):
-                rr = 0
-                if entry and stop and entry != stop:
-                    risk = entry - stop
-                    reward = tp1 - entry if tp1 else 0
-                    rr = reward / risk if risk > 0 else 0
-                
-                return (
-                    f"[green bold]🟢 BUY SIGNAL[/]\n"
-                    f"[white bold]{focus}[/]\n"
-                    f"Entry: ${entry:.4f}\n"
-                    f"Stop: ${stop:.4f} | TP: ${tp1:.4f}\n"
-                    f"R:R: {rr:.1f}x | Conf: {conf:.0f}%"
-                )
+            elif action in ("BUY", "ENTER_LONG", "ENTER_LONG_FAST"):
+                # Only show prices if they look valid (not 0 and reasonable)
+                if entry > 0 and entry < 100000:
+                    rr = 0
+                    if entry and stop and entry != stop:
+                        risk = entry - stop
+                        reward = tp1 - entry if tp1 else 0
+                        rr = reward / risk if risk > 0 else 0
+                    
+                    # Format price based on magnitude
+                    if entry < 1:
+                        price_fmt = f"${entry:.6f}"
+                    elif entry < 100:
+                        price_fmt = f"${entry:.4f}"
+                    else:
+                        price_fmt = f"${entry:.2f}"
+                    
+                    return (
+                        f"[green bold]🟢 {action}[/]\n"
+                        f"[white bold]{focus}[/] [{stage}]\n"
+                        f"Entry: {price_fmt}\n"
+                        f"R:R: {rr:.1f}x | Conf: {conf:.0f}%"
+                    )
+                else:
+                    return (
+                        f"[green bold]🟢 {action}[/]\n"
+                        f"[white bold]{focus}[/]\n"
+                        f"Conf: {conf:.0f}%"
+                    )
             elif action == "SKIP_TRAP":
                 return (
                     f"[red]⚠️ TRAP DETECTED[/]\n"
                     f"Focus: {focus}\n"
-                    f"Reason: {reason}"
+                    f"{reason}"
                 )
         
         return "[dim]Pipeline idle...[/]"
