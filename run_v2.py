@@ -1340,6 +1340,13 @@ class TradingBotV2:
             if symbol == focus_symbol:
                 old_stage = self.state.focus_coin.stage
                 self._update_focus_coin(symbol, buffer)
+                # Reset signal when focus changes to prevent stale data
+                if focus_symbol != prev_focus:
+                    self.state.current_signal.action = "WAIT"
+                    self.state.current_signal.entry_price = 0
+                    self.state.current_signal.stop_price = 0
+                    self.state.current_signal.tp1_price = 0
+                    self.state.current_signal.confidence = 0
                 self._update_signal_state(signal)
                 if focus_symbol != prev_focus and prev_focus:
                     self.state.log(f"Focus → {focus_symbol}", "FOCUS")
