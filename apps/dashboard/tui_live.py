@@ -61,7 +61,7 @@ class LiveScanner(Static):
     
     def render(self) -> str:
         lines = []
-        candidates = list(getattr(self.bot_state, "scanner_candidates", []))[:8]
+        candidates = list(getattr(self.bot_state, "candidates", []))[:8]
         
         if not candidates:
             return "[dim]Scanning...[/]"
@@ -91,7 +91,9 @@ class LivePositions(Static):
     
     def render(self) -> str:
         lines = []
-        positions = list(getattr(self.bot_state, "position_displays", []))[:6]
+        # Get positions from dict (router uses dict, not list)
+        pos_dict = getattr(self.bot_state, "positions", {}) or {}
+        positions = list(pos_dict.values())[:6]
         
         if not positions:
             return "[dim]No positions[/]"
@@ -101,15 +103,22 @@ class LivePositions(Static):
         
         for p in positions:
             sym = getattr(p, "symbol", "?").replace("-USD", "")[:6]
-            value = getattr(p, "value_usd", 0)
-            pnl = getattr(p, "pnl_pct", 0)
+            # Use actual position properties
+            entry_cost = getattr(p, "entry_cost_usd", 0) or getattr(p, "cost_basis", 0)
+            entry_price = getattr(p, "entry_price", 0)
+            size_qty = getattr(p, "size_qty", 0)
+            
+            # Estimate current value (use entry if no live price available)
+            value = entry_cost if entry_cost > 0 else (entry_price * size_qty)
             conf = getattr(p, "confidence", 70)
             
-            total_value += value
-            total_pnl += (value * pnl / 100) if pnl else 0
+            # Calculate PnL if we have price info
+            pnl = 0  # Default, would need live price for accurate PnL
             
-            pnl_color = "green" if pnl > 0 else "red"
-            lines.append(f"[cyan]{sym:6}[/] ${value:5.0f} [{pnl_color}]{pnl:+5.1f}%[/] {conf}%")
+            total_value += value
+            
+            pnl_color = "green" if pnl > 0 else "red" if pnl < 0 else "dim"
+            lines.append(f"[cyan]{sym:6}[/] ${value:5.0f} [{pnl_color}]{pnl:+5.1f}%[/]")
         
         lines.append(f"[dim]───────────────────[/]")
         pnl_color = "green" if total_pnl >= 0 else "red"
