@@ -15,26 +15,36 @@ _console_suppressed = False
 
 
 def suppress_console_logging(suppress: bool = True):
-    """Suppress console logging (for TUI mode)."""
+    """Suppress ALL console logging (for TUI mode). File logging continues."""
     global _console_suppressed
     _console_suppressed = suppress
     
+    # Suppress ALL StreamHandlers on ALL loggers
     root = logging.getLogger()
-    for handler in root.handlers:
-        if getattr(handler, "name", "") == _HANDLER_NAME:
-            if suppress:
-                handler.setLevel(logging.CRITICAL + 1)  # Suppress all
-            else:
+    
+    # Set root level very high to suppress everything to console
+    if suppress:
+        # Suppress all StreamHandlers
+        for handler in root.handlers[:]:
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                handler.setLevel(logging.CRITICAL + 1)
+    else:
+        for handler in root.handlers[:]:
+            if getattr(handler, "name", "") == _HANDLER_NAME:
                 handler.setLevel(_resolve_level(None))
     
-    # Also suppress external library loggers that print to console
-    external_loggers = ["coinbase", "coinbase.RESTClient", "urllib3", "httpx"]
-    for name in external_loggers:
+    # Suppress specific noisy loggers
+    noisy_loggers = [
+        "coinbase", "coinbase.RESTClient", "urllib3", "httpx",
+        "core.persistence", "core.live_portfolio", "execution.order_router",
+        "datafeeds.collectors.candle_collector", "__main__"
+    ]
+    for name in noisy_loggers:
         ext_logger = logging.getLogger(name)
         if suppress:
             ext_logger.setLevel(logging.CRITICAL + 1)
         else:
-            ext_logger.setLevel(logging.WARNING)
+            ext_logger.setLevel(logging.INFO)
 
 
 def _resolve_level(level: str | int | None) -> int:
