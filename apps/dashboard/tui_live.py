@@ -56,7 +56,7 @@ class LiveStatusBar(Static):
 
 
 class LiveScanner(Static):
-    """Scanner panel showing hot candidates."""
+    """Scanner panel - live watchlist with all candidates."""
     
     def __init__(self, state: BotState, **kwargs):
         super().__init__(**kwargs)
@@ -64,37 +64,44 @@ class LiveScanner(Static):
     
     def render(self) -> str:
         lines = []
-        # Use burst_leaderboard (same as old dashboard)
-        candidates = list(getattr(self.bot_state, "burst_leaderboard", []))[:8]
+        # Show up to 15 candidates for full watchlist
+        candidates = list(getattr(self.bot_state, "burst_leaderboard", []))[:15]
         
         if not candidates:
-            return "[dim]Scanning...[/]"
+            return "[dim]Scanning 108 symbols...[/]"
+        
+        # Header
+        lines.append("[dim]SYM    SCR STRAT  VOL   TREND[/]")
         
         for c in candidates:
             sym = getattr(c, "symbol", "?").replace("-USD", "")[:6]
             score = getattr(c, "entry_score", 0) or getattr(c, "score", 0)
             trend = getattr(c, "trend_5m", 0)
+            vol = getattr(c, "vol_spike", 0)
+            burst = getattr(c, "burst_score", 0)
             
-            # Infer strategy from metrics (same as old dashboard)
+            # Infer strategy from metrics
             strat = getattr(c, "strategy", "") or getattr(c, "strategy_id", "")
             if not strat:
-                burst = getattr(c, "burst_score", 0)
-                vol = getattr(c, "vol_spike", 0)
                 if burst >= 3:
                     strat = "burst"
                 elif vol >= 5:
-                    strat = "impulse"
+                    strat = "impuls"
                 elif trend > 1.0 and vol < 2:
                     strat = "daily"
+                elif abs(trend) < 0.3:
+                    strat = "range"
                 else:
                     strat = "scan"
             strat = strat[:6]
             
-            score_color = "green" if score >= 80 else "yellow" if score >= 70 else "dim"
-            trend_color = "green" if trend > 0 else "red" if trend < 0 else "dim"
+            # Color coding
+            score_color = "green bold" if score >= 80 else "green" if score >= 70 else "yellow" if score >= 60 else "dim"
+            trend_color = "green" if trend > 0.5 else "red" if trend < -0.5 else "dim"
+            vol_color = "cyan" if vol >= 3 else "dim"
             
             lines.append(
-                f"[cyan]{sym:6}[/] [{score_color}]{score:3}[/] {strat:6} [{trend_color}]{trend:+.1f}%[/]"
+                f"[cyan]{sym:6}[/] [{score_color}]{score:3}[/] {strat:6} [{vol_color}]{vol:4.1f}x[/] [{trend_color}]{trend:+5.1f}%[/]"
             )
         
         return "\n".join(lines)
@@ -154,7 +161,7 @@ class LivePositions(Static):
 
 
 class LiveSignal(Static):
-    """Current signal panel."""
+    """Current signal and pipeline status panel."""
     
     def __init__(self, state: BotState, **kwargs):
         super().__init__(**kwargs)
@@ -163,33 +170,48 @@ class LiveSignal(Static):
     def render(self) -> str:
         sig = getattr(self.bot_state, "current_signal", None)
         
-        if not sig or not getattr(sig, "symbol", None):
-            return "[dim]No active signal[/]"
+        # Get focus symbol from focus_coin object
+        focus_coin = getattr(self.bot_state, "focus_coin", None)
+        focus = getattr(focus_coin, "symbol", "").replace("-USD", "") if focus_coin else "—"
         
-        sym = sig.symbol.replace("-USD", "")
-        action = getattr(sig, "signal_type", "?")
-        conf = getattr(sig, "confidence", 0)
-        strat = getattr(sig, "strategy_id", "?")
-        entry = getattr(sig, "entry_price", 0)
-        stop = getattr(sig, "stop_price", 0)
-        tp1 = getattr(sig, "tp1_price", 0)
+        # Show current action/reason
+        if sig:
+            action = getattr(sig, "action", "WAIT")
+            reason = getattr(sig, "reason", "")[:30]
+            conf = getattr(sig, "confidence", 0)
+            entry = getattr(sig, "entry_price", 0)
+            stop = getattr(sig, "stop_price", 0)
+            tp1 = getattr(sig, "tp1_price", 0)
+            
+            if action == "WAIT":
+                return (
+                    f"[yellow]⏳ WAITING[/]\n"
+                    f"Focus: {focus}\n"
+                    f"Reason: {reason or 'Scanning...'}\n"
+                    f"Conf: {conf:.0f}%"
+                )
+            elif action in ("BUY", "ENTER_LONG"):
+                rr = 0
+                if entry and stop and entry != stop:
+                    risk = entry - stop
+                    reward = tp1 - entry if tp1 else 0
+                    rr = reward / risk if risk > 0 else 0
+                
+                return (
+                    f"[green bold]🟢 BUY SIGNAL[/]\n"
+                    f"[white bold]{focus}[/]\n"
+                    f"Entry: ${entry:.4f}\n"
+                    f"Stop: ${stop:.4f} | TP: ${tp1:.4f}\n"
+                    f"R:R: {rr:.1f}x | Conf: {conf:.0f}%"
+                )
+            elif action == "SKIP_TRAP":
+                return (
+                    f"[red]⚠️ TRAP DETECTED[/]\n"
+                    f"Focus: {focus}\n"
+                    f"Reason: {reason}"
+                )
         
-        # R:R calculation
-        rr = 0
-        if entry and stop and entry != stop:
-            risk = entry - stop
-            reward = tp1 - entry if tp1 else 0
-            rr = reward / risk if risk > 0 else 0
-        
-        return (
-            f"[bold cyan]{action}[/] @ {conf:.0f}%\n"
-            f"[white bold]{sym}[/] - {strat}\n"
-            f"\n"
-            f"Entry: [white]${entry:.4f}[/]\n"
-            f"Stop:  [red]${stop:.4f}[/]\n"
-            f"TP1:   [green]${tp1:.4f}[/]\n"
-            f"R:R:   [yellow]{rr:.1f}x[/]"
-        )
+        return "[dim]Pipeline idle...[/]"
 
 
 class LiveStats(Static):
