@@ -33,8 +33,11 @@ class LiveStatusBar(Static):
         cash = s.cash_balance or 0
         holdings = s.holdings_value or 0
         
-        btc = getattr(s, "btc_1h_trend", 0) or 0
+        # BTC trend and regime
+        btc = getattr(s, "btc_trend_1h", 0) or 0
         btc_color = "green" if btc > 0 else "red" if btc < -1 else "yellow"
+        regime = getattr(s, "btc_regime", "normal")
+        regime_icon = "🟢" if regime == "normal" else "🟡" if regime == "caution" else "🔴"
         
         ws = "✅" if s.ws_ok else "❌"
         ws_age = s.ws_last_age or 0
@@ -45,7 +48,7 @@ class LiveStatusBar(Static):
         return (
             f"[{mode_color} bold]{mode}[/] │ "
             f"💰 ${portfolio:.2f} (${cash:.0f}+${holdings:.0f}) │ "
-            f"BTC: [{btc_color}]{btc:+.1f}%[/] │ "
+            f"BTC: [{btc_color}]{btc:+.1f}%[/] {regime_icon} │ "
             f"WS: {ws} {ws_age:.0f}s │ "
             f"Sync: {sync} │ "
             f"[dim]{datetime.now(timezone.utc).strftime('%H:%M:%S')}[/]"
@@ -122,16 +125,26 @@ class LivePositions(Static):
         
         for p in positions:
             sym = getattr(p, "symbol", "?").replace("-USD", "")[:6]
-            # PositionDisplay has: size_usd, unrealized_pnl, unrealized_pct
+            # PositionDisplay fields
             value = getattr(p, "size_usd", 0)
             pnl_pct = getattr(p, "unrealized_pct", 0)
             pnl_usd = getattr(p, "unrealized_pnl", 0)
+            entry = getattr(p, "entry_price", 0)
+            stop = getattr(p, "stop_price", 0)
+            age = getattr(p, "age_min", 0)
+            
+            # Calculate stop distance %
+            stop_dist = ((entry - stop) / entry * 100) if entry > 0 else 0
             
             total_value += value
             total_pnl += pnl_usd
             
             pnl_color = "green" if pnl_pct > 0 else "red" if pnl_pct < 0 else "dim"
-            lines.append(f"[cyan]{sym:6}[/] ${value:5.0f} [{pnl_color}]{pnl_pct:+5.1f}%[/]")
+            # Show: SYM $value +pnl% (stop% age)
+            lines.append(
+                f"[cyan]{sym:5}[/] ${value:4.0f} [{pnl_color}]{pnl_pct:+5.1f}%[/] "
+                f"[dim]({stop_dist:.1f}% {age:.0f}m)[/]"
+            )
         
         lines.append(f"[dim]───────────────────[/]")
         pnl_color = "green" if total_pnl >= 0 else "red"
@@ -191,16 +204,25 @@ class LiveStats(Static):
         trades = getattr(s, "trades_today", 0)
         wins = getattr(s, "wins_today", 0)
         losses = getattr(s, "losses_today", 0)
-        pnl = getattr(s, "daily_pnl", 0)
+        realized = getattr(s, "realized_pnl", 0)
+        unrealized = getattr(s, "actual_pnl", 0) - realized
+        total_pnl = getattr(s, "actual_pnl", 0)
         win_rate = getattr(s, "win_rate", 0)
         
-        pnl_color = "green" if pnl >= 0 else "red"
+        # Daily loss limit
+        loss_limit = getattr(s, "daily_loss_limit_usd", 30)
+        loss_pct = (abs(min(total_pnl, 0)) / loss_limit * 100) if loss_limit > 0 else 0
+        limit_color = "green" if loss_pct < 50 else "yellow" if loss_pct < 80 else "red"
+        
+        pnl_color = "green" if total_pnl >= 0 else "red"
+        real_color = "green" if realized >= 0 else "red"
         
         return (
-            f"Trades: {trades}\n"
-            f"W/L: {wins}/{losses}\n"
+            f"Trades: {trades} ({wins}W/{losses}L)\n"
             f"Win%: {win_rate*100:.0f}%\n"
-            f"PnL: [{pnl_color}]${pnl:+.2f}[/]"
+            f"Real: [{real_color}]${realized:+.2f}[/]\n"
+            f"Total: [{pnl_color}]${total_pnl:+.2f}[/]\n"
+            f"Limit: [{limit_color}]{loss_pct:.0f}%[/] of ${loss_limit:.0f}"
         )
 
 
@@ -223,21 +245,30 @@ class LiveHealth(Static):
         # Universe stats (nested in universe object)
         uni = getattr(s, "universe", None)
         eligible = getattr(uni, "eligible_symbols", 0) if uni else 0
-        streams = getattr(uni, "symbols_streaming", 0) if uni else 0
+        
+        # Tier breakdown
+        t1 = getattr(s, "tier1_count", 0)
+        t2 = getattr(s, "tier2_count", 0)
+        t3 = getattr(s, "tier3_count", 0)
         
         warm = getattr(s, "warm_symbols", 0)
         cold = getattr(s, "cold_symbols", 0)
+        backfills = getattr(s, "pending_backfills", 0)
         
         # Budget from actual fields
         budget_total = getattr(s, "bot_budget_usd", 0)
         exposure_pct = getattr(s, "exposure_pct", 0)  # Already 0-100 percentage
         budget_used = budget_total * (exposure_pct / 100) if budget_total else 0
         
+        # Rate limit status
+        rate_degraded = getattr(s, "rest_rate_degraded", False)
+        rate_icon = "🔴" if rate_degraded else "🟢"
+        
         return (
-            f"Runtime: {runtime}m\n"
-            f"Universe: {eligible}\n"
+            f"Runtime: {runtime}m | Rate: {rate_icon}\n"
+            f"Universe: {eligible} ({t1}ws/{t2}+{t3}rest)\n"
             f"Warm: {warm} | Cold: {cold}\n"
-            f"Streams: {streams}\n"
+            f"Backfill: {backfills} pending\n"
             f"Budget: ${budget_used:.0f}/${budget_total:.0f}"
         )
 
