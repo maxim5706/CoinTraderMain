@@ -1285,6 +1285,9 @@ class TradingBotV2:
         for symbol in candidates:
             buffer = self.collector.get_buffer(symbol)
             if buffer is None:
+                # If focus symbol has no buffer, clear stale signal
+                if symbol == focus_symbol:
+                    self._clear_signal_state("No candle data")
                 continue
             
             features = self._build_features(symbol, buffer)
@@ -1293,12 +1296,18 @@ class TradingBotV2:
                 self._last_strategy_signals.pop(symbol, None)
                 # Track as "no signal" - strategy didn't find entry opportunity
                 self.state.rejections_score += 1
+                # If focus symbol has no signal, clear stale signal
+                if symbol == focus_symbol:
+                    self._clear_signal_state("Scanning...")
                 continue
             
             signal = self._adapt_strategy_signal(symbol, strat_signal, features, market_context, buffer)
             if signal is None:
                 self._last_strategy_signals.pop(symbol, None)
                 self.state.rejections_score += 1
+                # If focus symbol has no valid signal, clear stale signal
+                if symbol == focus_symbol:
+                    self._clear_signal_state("No entry setup")
                 continue
             
             self._last_strategy_signals[symbol] = strat_signal
@@ -1345,11 +1354,7 @@ class TradingBotV2:
                 self._update_focus_coin(symbol, buffer)
                 # Reset signal when focus changes to prevent stale data
                 if focus_symbol != prev_focus:
-                    self.state.current_signal.action = "WAIT"
-                    self.state.current_signal.entry_price = 0
-                    self.state.current_signal.stop_price = 0
-                    self.state.current_signal.tp1_price = 0
-                    self.state.current_signal.confidence = 0
+                    self._clear_signal_state("Focus changed")
                 self._update_signal_state(signal)
                 if focus_symbol != prev_focus and prev_focus:
                     self.state.log(f"Focus → {focus_symbol}", "FOCUS")
@@ -1547,6 +1552,19 @@ class TradingBotV2:
         fc.triple_top = False
         fc.head_shoulders = False
         fc.skip_reason = ""
+    
+    def _clear_signal_state(self, reason: str = ""):
+        """Clear signal state to prevent stale data display."""
+        sig = self.state.current_signal
+        fc = self.state.focus_coin
+        sig.action = "WAIT"
+        sig.symbol = fc.symbol
+        sig.entry_price = 0
+        sig.stop_price = 0
+        sig.tp1_price = 0
+        sig.tp2_price = 0
+        sig.confidence = 0
+        sig.reason = reason
     
     def _update_signal_state(self, signal):
         """Update current signal state from strategy signal."""
