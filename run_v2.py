@@ -1516,6 +1516,9 @@ class TradingBotV2:
         sig = self.state.current_signal
         fc = self.state.focus_coin
         
+        # Always track which symbol this signal is for
+        sig.symbol = getattr(signal, "symbol", "") or fc.symbol
+        
         if signal.type == SignalType.NONE:
             sig.action = "WAIT"
             sig.reason = signal.reason

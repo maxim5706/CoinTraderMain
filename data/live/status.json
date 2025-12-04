@@ -1,5 +1,5 @@
 {
-  "ts": "2025-12-04T01:02:45.389Z",
+  "ts": "2025-12-04T01:10:28.767Z",
   "ws_ok": true,
   "ws_last_age": 0.0,
   "ws_reconnect_count": 0,
@@ -7,8 +7,8 @@
   "profile": "prod",
   "universe": {
     "eligible": 108,
-    "warm": 103,
-    "cold": 5,
+    "warm": 102,
+    "cold": 6,
     "tier1": 75,
     "tier2": 15,
     "tier3": 18
@@ -18,12 +18,12 @@
     "total_cached": 0
   },
   "rejections": {
-    "spread": 42,
+    "spread": 3,
     "warmth": 0,
     "regime": 0,
-    "score": 186,
-    "rr": 189,
+    "score": 650,
+    "rr": 205,
     "limits": 2
   },
-  "positions": 7
+  "positions": 4
 }

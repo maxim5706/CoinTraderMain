@@ -178,8 +178,13 @@ class LiveSignal(Static):
         
         # Get focus symbol and stage from focus_coin object
         focus_coin = getattr(self.bot_state, "focus_coin", None)
-        focus = getattr(focus_coin, "symbol", "").replace("-USD", "") if focus_coin else "—"
         stage = getattr(focus_coin, "stage", "scan") if focus_coin else "scan"
+        
+        # Use signal's symbol if available (more accurate for price)
+        sig_symbol = getattr(sig, "symbol", "") if sig else ""
+        focus = sig_symbol.replace("-USD", "") if sig_symbol else (
+            getattr(focus_coin, "symbol", "").replace("-USD", "") if focus_coin else "—"
+        )
         
         # Show current action/reason
         if sig:

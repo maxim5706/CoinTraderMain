@@ -70,6 +70,7 @@ class FocusCoinState:
 class CurrentSignal:
     """Current trading signal state."""
     action: str = "WAIT"  # WAIT, ENTER_LONG, EXIT, SKIP_TRAP
+    symbol: str = ""      # Symbol this signal is for
     confidence: float = 0.0
     reason: str = ""
     entry_price: float = 0.0
