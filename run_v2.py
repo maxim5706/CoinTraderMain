@@ -1136,11 +1136,38 @@ class TradingBotV2:
                 entry_score=entry_score
             ))
         
-        # If we have no scored candidates yet, keep whatever live-price
-        # candidates were populated by _update_live_prices so the radar
-        # is not blank during warmup.
+        # If hot_list is small, supplement with warm symbols from candle_store
+        if len(candidates) < 8:
+            try:
+                from services.candle_store import candle_store
+                # Get warm symbols that aren't already in candidates
+                existing = {c.symbol for c in candidates}
+                warm_symbols = [s for s in candle_store.list_symbols() if s not in existing]
+                
+                for symbol in warm_symbols[:12 - len(candidates)]:
+                    info = self.scanner.universe.get(symbol)
+                    price = self._get_price(symbol)
+                    if price and price > 0:
+                        candidates.append(BurstCandidate(
+                            symbol=symbol,
+                            price=price,
+                            burst_score=0,
+                            vol_spike=1.0,  # Default
+                            range_spike=0,
+                            trend_5m=0,
+                            trend_slope=0,
+                            vwap_dist=0,
+                            daily_move=0,
+                            tier=info.tier if info else "unknown",
+                            rank=len(candidates) + 1,
+                            entry_score=45  # Warm but not hot
+                        ))
+            except Exception:
+                pass
+        
+        # Update leaderboard
         if candidates:
-            self.state.burst_leaderboard = candidates
+            self.state.burst_leaderboard = candidates[:15]
 
     def _write_status_snapshot(self):
         """Write lightweight BotState snapshot for external health checks."""
