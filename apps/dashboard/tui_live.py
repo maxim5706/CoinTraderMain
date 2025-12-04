@@ -303,28 +303,103 @@ class LiveLogs(Static):
         return "\n".join(lines)
 
 
+class LiveVerdicts(Static):
+    """Rejection stats and verdicts panel."""
+    
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
+        self.bot_state = state
+    
+    def render(self) -> str:
+        s = self.bot_state
+        
+        # Rejection counts
+        spread = getattr(s, "rejections_spread", 0)
+        warmth = getattr(s, "rejections_warmth", 0)
+        regime = getattr(s, "rejections_regime", 0)
+        score = getattr(s, "rejections_score", 0)
+        rr = getattr(s, "rejections_rr", 0)
+        limits = getattr(s, "rejections_limits", 0)
+        
+        total = spread + warmth + regime + score + rr + limits
+        
+        # Activity counters
+        ticks = getattr(s, "ticks_last_5s", 0)
+        candles = getattr(s, "candles_last_5s", 0)
+        
+        lines = [
+            f"[bold]Rejections:[/] {total}",
+            f"  Spread: {spread} | Score: {score}",
+            f"  R:R: {rr} | Limits: {limits}",
+            f"  Warmth: {warmth} | Regime: {regime}",
+            f"[dim]─────────────────[/]",
+            f"Activity: {ticks}t/{candles}c per 5s"
+        ]
+        
+        return "\n".join(lines)
+
+
+class LiveActivity(Static):
+    """Live stream activity panel."""
+    
+    def __init__(self, state: BotState, **kwargs):
+        super().__init__(**kwargs)
+        self.bot_state = state
+    
+    def render(self) -> str:
+        s = self.bot_state
+        
+        # Stream activity
+        ticks = getattr(s, "ticks_last_5s", 0)
+        candles = getattr(s, "candles_last_5s", 0)
+        events = getattr(s, "events_last_5s", 0)
+        
+        # Recent hot symbol
+        hot = getattr(s, "last_hot_symbol", None) or "—"
+        hot_age = getattr(s, "hot_symbol_age", 0)
+        
+        # Kill switch status
+        kill = getattr(s, "kill_switch", False)
+        kill_reason = getattr(s, "kill_reason", "")
+        
+        if kill:
+            status = f"[red bold]⛔ KILLED[/]\n{kill_reason[:30]}"
+        else:
+            status = "[green]✅ Active[/]"
+        
+        return (
+            f"Ticks: {ticks}/5s\n"
+            f"Candles: {candles}/5s\n"
+            f"Events: {events}/5s\n"
+            f"Hot: {hot[:8]}\n"
+            f"Status: {status}"
+        )
+
+
 class LiveTradingDashboard(App):
     """Live trading dashboard - integrates with bot state."""
     
     CSS = """
     Screen {
         layout: grid;
-        grid-size: 3 4;
+        grid-size: 4 4;
         grid-rows: 1 1fr 1fr 1fr;
         grid-gutter: 1;
     }
     
-    #status { column-span: 3; height: 1; }
+    #status { column-span: 4; height: 1; }
     
     #scanner { border: solid cyan; padding: 0 1; }
     #positions { border: solid green; padding: 0 1; }
     #stats { border: solid magenta; padding: 0 1; }
+    #verdicts { border: solid red; padding: 0 1; }
     
     #signal { border: solid yellow; padding: 0 1; }
     #health { border: solid blue; padding: 0 1; }
     #orders { border: solid white; padding: 0 1; }
+    #activity { border: solid cyan; padding: 0 1; }
     
-    #logs { column-span: 3; border: solid grey; padding: 0 1; }
+    #logs { column-span: 4; border: solid grey; padding: 0 1; }
     
     .title { text-style: bold; }
     """
@@ -362,6 +437,12 @@ class LiveTradingDashboard(App):
         )
         
         yield Container(
+            Label("🚫 Verdicts", classes="title"),
+            LiveVerdicts(self.bot_state),
+            id="verdicts"
+        )
+        
+        yield Container(
             Label("⚡ Signal", classes="title"),
             LiveSignal(self.bot_state),
             id="signal"
@@ -375,6 +456,11 @@ class LiveTradingDashboard(App):
             Label("📋 Orders", classes="title"),
             LiveLogs(self.bot_state),
             id="orders"
+        )
+        yield Container(
+            Label("📶 Activity", classes="title"),
+            LiveActivity(self.bot_state),
+            id="activity"
         )
         
         yield Container(
