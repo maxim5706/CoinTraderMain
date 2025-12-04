@@ -14,37 +14,47 @@ _HANDLER_NAME = "cointrader-root-handler"
 _console_suppressed = False
 
 
+_saved_handlers = []
+
 def suppress_console_logging(suppress: bool = True):
     """Suppress ALL console logging (for TUI mode). File logging continues."""
-    global _console_suppressed
+    global _console_suppressed, _saved_handlers
     _console_suppressed = suppress
     
-    # Suppress ALL StreamHandlers on ALL loggers
     root = logging.getLogger()
     
-    # Set root level very high to suppress everything to console
     if suppress:
-        # Suppress all StreamHandlers
+        # NUCLEAR OPTION: Remove ALL StreamHandlers from root logger
+        _saved_handlers = []
         for handler in root.handlers[:]:
             if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
-                handler.setLevel(logging.CRITICAL + 1)
+                _saved_handlers.append(handler)
+                root.removeHandler(handler)
+        
+        # Also set root level very high as backup
+        root.setLevel(logging.CRITICAL + 1)
+        
+        # Suppress ALL known loggers by name
+        all_loggers = list(logging.Logger.manager.loggerDict.keys())
+        for name in all_loggers:
+            logger = logging.getLogger(name)
+            logger.setLevel(logging.CRITICAL + 1)
+            # Remove their handlers too
+            for h in logger.handlers[:]:
+                if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler):
+                    logger.removeHandler(h)
     else:
-        for handler in root.handlers[:]:
-            if getattr(handler, "name", "") == _HANDLER_NAME:
-                handler.setLevel(_resolve_level(None))
-    
-    # Suppress specific noisy loggers
-    noisy_loggers = [
-        "coinbase", "coinbase.RESTClient", "urllib3", "httpx",
-        "core.persistence", "core.live_portfolio", "execution.order_router",
-        "datafeeds.collectors.candle_collector", "__main__"
-    ]
-    for name in noisy_loggers:
-        ext_logger = logging.getLogger(name)
-        if suppress:
-            ext_logger.setLevel(logging.CRITICAL + 1)
-        else:
-            ext_logger.setLevel(logging.INFO)
+        # Restore handlers
+        for handler in _saved_handlers:
+            root.addHandler(handler)
+        _saved_handlers = []
+        root.setLevel(_resolve_level(None))
+        
+        # Restore logger levels
+        all_loggers = list(logging.Logger.manager.loggerDict.keys())
+        for name in all_loggers:
+            logger = logging.getLogger(name)
+            logger.setLevel(logging.NOTSET)  # Inherit from parent
 
 
 def _resolve_level(level: str | int | None) -> int:
