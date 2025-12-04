@@ -342,7 +342,9 @@ class LiveTradingDashboard(App):
         """Refresh all widgets."""
         if self._paused:
             return
-        self.refresh()
+        # Refresh all custom Static widgets to re-render with new state
+        for widget in self.query("Static"):
+            widget.refresh()
     
     def action_toggle_pause(self):
         """Toggle pause state."""
