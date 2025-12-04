@@ -1783,10 +1783,10 @@ class TradingBotV2:
         """Update display periodically using Textual TUI."""
         from core.logging_utils import suppress_console_logging
         
-        await asyncio.sleep(2)
-        
-        # Suppress console logging while TUI is active (logs still go to file)
+        # Suppress console logging IMMEDIATELY (logs still go to file)
         suppress_console_logging(True)
+        
+        await asyncio.sleep(2)
         
         try:
             # Try new Textual TUI first

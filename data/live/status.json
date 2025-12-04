@@ -1,5 +1,5 @@
 {
-  "ts": "2025-12-04T01:41:17.129Z",
+  "ts": "2025-12-04T01:41:49.789Z",
   "ws_ok": true,
   "ws_last_age": 0.0,
   "ws_reconnect_count": 0,
@@ -14,16 +14,16 @@
     "tier3": 18
   },
   "ml": {
-    "fresh_pct": 100.0,
+    "fresh_pct": 98.68421052631578,
     "total_cached": 76
   },
   "rejections": {
     "spread": 48,
     "warmth": 0,
     "regime": 0,
-    "score": 3041,
-    "rr": 2590,
-    "limits": 170
+    "score": 3073,
+    "rr": 2638,
+    "limits": 178
   },
   "positions": 7
 }
