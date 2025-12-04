@@ -222,8 +222,9 @@ class OrderManager:
             print("[ORDERS] No client, can't place stop order")
             return None
 
-        # Resolve price increment (default 1 cent for USD pairs)
+        # Resolve price and size increments
         price_increment = 0.01
+        base_increment = 0.00000001  # Default for most crypto
         try:
             product = self._client.get_product(symbol)
             price_increment = float(
@@ -231,25 +232,38 @@ class OrderManager:
                 or getattr(product, "quote_increment", 0.01)
                 or 0.01
             )
+            base_increment = float(
+                getattr(product, "base_increment", None)
+                or 0.00000001
+            )
         except Exception:
             price_increment = 0.01
+            base_increment = 0.00000001
 
-        def _quantize(value: float) -> float:
+        def _quantize_price(value: float) -> float:
             """Round price to exchange-supported precision."""
             try:
                 inc = Decimal(str(price_increment))
                 return float(Decimal(str(value)).quantize(inc, rounding=ROUND_HALF_UP))
             except Exception:
-                # Fallback to simple rounding if Decimal fails
                 return round(value / price_increment) * price_increment if price_increment else value
+        
+        def _quantize_size(value: float) -> float:
+            """Round size to exchange-supported precision."""
+            try:
+                inc = Decimal(str(base_increment))
+                return float(Decimal(str(value)).quantize(inc, rounding=ROUND_DOWN))
+            except Exception:
+                return round(value / base_increment) * base_increment if base_increment else value
         
         # Default limit price with wider gap for flash crashes (2% below stop)
         if limit_price is None:
             limit_price = calculate_limit_price(stop_price)  # 0.98 = 2% gap
 
-        # Quantize prices to meet Coinbase precision requirements
-        stop_price = _quantize(stop_price)
-        limit_price = _quantize(limit_price)
+        # Quantize prices and size to meet Coinbase precision requirements
+        stop_price = _quantize_price(stop_price)
+        limit_price = _quantize_price(limit_price)
+        qty = _quantize_size(qty)
 
         # Deduplicate: if an open stop already exists at effectively the same price, reuse it
         existing_stop = self.get_stop_order(symbol)
