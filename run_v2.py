@@ -864,13 +864,16 @@ class TradingBotV2:
         
         # Track BTC regime update
         last_btc_check = datetime.now(timezone.utc) - timedelta(minutes=5)
+        last_counter_reset = datetime.now(timezone.utc)
         
         while self._running:
             try:
-                # Reset population counters for this cycle
-                self.state.ticks_last_5s = 0
-                self.state.candles_last_5s = 0
-                self.state.events_last_5s = 0
+                # Reset population counters every 5 seconds (not every loop)
+                if (datetime.now(timezone.utc) - last_counter_reset).total_seconds() >= 5:
+                    self.state.ticks_last_5s = 0
+                    self.state.candles_last_5s = 0
+                    self.state.events_last_5s = 0
+                    last_counter_reset = datetime.now(timezone.utc)
                 
                 # Update BTC regime every 2 minutes
                 if (datetime.now(timezone.utc) - last_btc_check).total_seconds() >= 120:
