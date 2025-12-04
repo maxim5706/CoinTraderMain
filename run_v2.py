@@ -953,9 +953,10 @@ class TradingBotV2:
                 # Run strategy analysis on hot symbols
                 await self._run_strategy_analysis()
                 
-                # Refresh real portfolio from Coinbase (every 30 seconds) - skip in PAPER
+                # Refresh real portfolio from Coinbase (every 15 seconds) - skip in PAPER
                 if not hasattr(self, '_last_portfolio_refresh'):
-                    self._last_portfolio_refresh = datetime.now(timezone.utc)
+                    # Force immediate first refresh by setting to old time
+                    self._last_portfolio_refresh = datetime.now(timezone.utc) - timedelta(seconds=20)
                     self._last_pnl_log = datetime.now(timezone.utc)
                 if not hasattr(self, '_last_status_write'):
                     self._last_status_write = datetime.now(timezone.utc)
