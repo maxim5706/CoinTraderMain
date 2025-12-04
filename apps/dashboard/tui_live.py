@@ -264,7 +264,7 @@ class LiveTradingDashboard(App):
     #health { border: solid blue; padding: 0 1; }
     #orders { border: solid white; padding: 0 1; }
     
-    #logs { column-span: 3; border: solid dim; padding: 0 1; }
+    #logs { column-span: 3; border: solid grey; padding: 0 1; }
     
     .title { text-style: bold; }
     """

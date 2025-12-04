@@ -835,6 +835,11 @@ class OrderRouter:
         max_size = pv * settings.position_max_pct
         size_usd = max(min_size, min(max_size, size_usd))
         
+        # Cap at max_trade_usd to prevent executor rejection
+        if size_usd > settings.max_trade_usd:
+            logger.debug("[TIER] Capping %s from $%.0f to max $%.0f", symbol, size_usd, settings.max_trade_usd)
+            size_usd = settings.max_trade_usd
+        
         # TRUTH CHECK: Validate system state before trading
         if not self._validate_before_trade(symbol):
             logger.error("[TRUTH] Pre-trade validation failed for %s", symbol)
