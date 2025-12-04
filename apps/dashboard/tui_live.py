@@ -230,8 +230,8 @@ class LiveHealth(Static):
         
         # Budget from actual fields
         budget_total = getattr(s, "bot_budget_usd", 0)
-        exposure = getattr(s, "exposure_pct", 0)
-        budget_used = budget_total * exposure if budget_total else 0
+        exposure_pct = getattr(s, "exposure_pct", 0)  # Already 0-100 percentage
+        budget_used = budget_total * (exposure_pct / 100) if budget_total else 0
         
         return (
             f"Runtime: {runtime}m\n"
