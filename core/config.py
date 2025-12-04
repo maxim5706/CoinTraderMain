@@ -74,16 +74,16 @@ class Settings(BaseSettings):
     breakout_vol_mult: float = 1.3
     
     # Stops/TPs (after fees: 1.8% round-trip with limit orders)
-    # Tightened stops to prevent -12% average losses
-    fixed_stop_pct: float = 0.035  # Increased from 2.5% to 3.5%
-    tp1_pct: float = 0.04
-    tp2_pct: float = 0.07
+    # R:R = tp1_pct / fixed_stop_pct must be >= min_rr_ratio
+    fixed_stop_pct: float = 0.035  # 3.5% stop
+    tp1_pct: float = 0.07          # 7% TP1 → R:R = 2.0
+    tp2_pct: float = 0.10          # 10% TP2
     tp1_partial_pct: float = 0.5
     stop_atr_mult: float = 1.2  # Tighter ATR stops (was 1.5)
     tp2_impulse_mult: float = 0.5
     max_hold_minutes: int = 120  # Reduce from 180 to 120 min
     time_stop_enabled: bool = True  # Enable time stops
-    min_rr_ratio: float = 1.8  # Increase from 1.5 to 1.8
+    min_rr_ratio: float = 1.5  # R:R minimum (7/3.5 = 2.0 passes)
     
     # Trailing
     trail_be_trigger_pct: float = 0.025
