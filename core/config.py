@@ -41,15 +41,18 @@ class Settings(BaseSettings):
     daily_max_loss_usd: float = Field(default=25.0, alias="DAILY_MAX_LOSS_USD")
     max_positions: int = 10                   # Focus on fewer, bigger positions
     
-    # Tiered sizing - bet big on best setups
-    whale_trade_usd: float = 30.0             # A+ setups
-    whale_score_min: int = 90                 # Min score for whale
+    # Tiered sizing - BEAST MODE with learning positions
+    whale_trade_usd: float = 30.0             # A+ setups (85+ score, confluence)
+    whale_score_min: int = 85                 # Min score for whale
     whale_confluence_min: int = 2             # Min confluence for whale
-    strong_trade_usd: float = 15.0            # A setups
-    strong_score_min: int = 80                # Min score for strong (OR confluence)
-    normal_trade_usd: float = 8.0             # B setups
+    strong_trade_usd: float = 15.0            # A setups (70-84 score)
+    strong_score_min: int = 70                # Min score for strong
+    normal_trade_usd: float = 10.0            # B setups (55-69 score)
+    scout_trade_usd: float = 5.0              # C setups - LEARNING positions (45-54 score)
+    scout_score_min: int = 45                 # Min score for scout (experimental)
     whale_max_positions: int = 2              # Max whale bets at once
     strong_max_positions: int = 4             # Max strong bets
+    scout_max_positions: int = 6              # Max scout positions (learning)
     
     # Fees (Intro tier)
     taker_fee_pct: float = 0.012
@@ -112,16 +115,16 @@ class Settings(BaseSettings):
     ml_boost_scale: float = 10.0
     ml_boost_min: float = -5.0
     ml_boost_max: float = 10.0
-    base_score_strict_cutoff: float = 60
-    entry_score_min: float = 70
+    base_score_strict_cutoff: float = 45
+    entry_score_min: float = 45  # BEAST MODE - allow scout positions
     
     # Thesis invalidation - tighter to prevent big losses
     thesis_trend_flip_5m: float = -0.3  # Tighter from -0.5
     thesis_trend_flip_15m: float = -0.2  # Tighter from -0.3
     thesis_vwap_distance: float = -0.8  # Tighter from -1.0
     
-    # Liquidity
-    spread_max_bps: float = 25.0
+    # Liquidity (RELAXED for full coverage)
+    spread_max_bps: float = 50.0  # Allow wider spreads for memes/small caps (was 25)
     min_24h_volume_usd: float = 100000
     
     # Order management

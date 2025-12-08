@@ -116,6 +116,12 @@ class OrderRouter:
         # Persistent cooldowns (survives restarts)
         self._cooldown_persistence = CooldownPersistence(self.mode)
         self._order_cooldown = self._cooldown_persistence.load()
+        
+        # SMART MULTI-SERVE: Signal batching and momentum ranking
+        self._signal_buffer: list = []  # Collect signals for ranking
+        self._last_batch_flush: Optional[datetime] = None
+        self._batch_window_sec = 30  # Collect for 30s, then rank and execute best
+        self._candle_collector = None  # For getting features
 
         if hasattr(self.stop_manager, "bind_client") and self._client:
             try:
@@ -547,6 +553,142 @@ class OrderRouter:
     def set_candle_collector(self, collector):
         """Set reference to candle collector for thesis checks."""
         self._candle_collector = collector
+    
+    # ============================================================
+    # SMART MULTI-SERVE: Momentum-based signal batching and ranking
+    # ============================================================
+    
+    def add_signal_to_batch(self, signal, features: dict = None):
+        """
+        Collect signal for batching (SMART MULTI-SERVE).
+        
+        Instead of immediately executing, collect signals for 30s,
+        then rank by momentum and execute best ones first.
+        
+        This catches LRDS at +9% (goes to +63%) instead of ETH at +2%.
+        """
+        from dataclasses import dataclass
+        
+        @dataclass
+        class RankedSignal:
+            symbol: str
+            signal: any
+            score: int
+            momentum_1h: float
+            momentum_15m: float
+            volume_spike: float
+            combined_rank: float
+            features: dict
+        
+        if features is None:
+            features = {}
+        
+        # Extract momentum metrics
+        momentum_1h = features.get('trend_1h', 0) or features.get('trend_15m', 0) * 4
+        momentum_15m = features.get('trend_15m', 0) or features.get('trend_5m', 0) * 3
+        volume_spike = features.get('vol_spike_5m', 1.0)
+        
+        # Get score from signal
+        score = getattr(signal, 'score', 70)
+        entry_score = getattr(signal, 'entry_score', None)
+        if entry_score and hasattr(entry_score, 'total_score'):
+            score = int(entry_score.total_score)
+        
+        # Calculate combined rank (momentum-weighted)
+        # Momentum is 60% (catches movers like LRDS +63%)
+        # Volume is 25% (confirmation)
+        # Score is 15% (quality filter)
+        combined_rank = (
+            abs(momentum_1h) * 0.4 +      # 40% weight on 1h momentum
+            abs(momentum_15m) * 0.2 +      # 20% weight on 15m momentum  
+            max(0, (volume_spike - 1.0)) * 0.25 +  # 25% weight on volume spike
+            (score / 100) * 0.15           # 15% weight on score
+        )
+        
+        ranked = RankedSignal(
+            symbol=signal.symbol,
+            signal=signal,
+            score=score,
+            momentum_1h=momentum_1h,
+            momentum_15m=momentum_15m,
+            volume_spike=volume_spike,
+            combined_rank=combined_rank,
+            features=features
+        )
+        
+        self._signal_buffer.append(ranked)
+        logger.debug(
+            "[BATCH] Collected %s: rank=%.2f (mom1h=%.1f%%, vol=%.1fx, score=%d)",
+            signal.symbol, combined_rank, momentum_1h, volume_spike, score
+        )
+    
+    async def process_signal_batch(self) -> int:
+        """
+        Process batch of signals: rank by momentum, execute best ones.
+        
+        Returns number of positions opened.
+        """
+        now = datetime.now(timezone.utc)
+        
+        # Initialize batch timer
+        if self._last_batch_flush is None:
+            self._last_batch_flush = now
+            return 0
+        
+        # Check if batch window elapsed
+        elapsed = (now - self._last_batch_flush).total_seconds()
+        if elapsed < self._batch_window_sec and len(self._signal_buffer) < 20:
+            return 0  # Keep collecting signals
+        
+        if not self._signal_buffer:
+            return 0  # No signals to process
+        
+        # Rank signals by combined momentum/quality score
+        sorted_signals = sorted(
+            self._signal_buffer,
+            key=lambda x: x.combined_rank,
+            reverse=True
+        )
+        
+        # Log rankings
+        logger.info("[BATCH] Processing %d signals:", len(sorted_signals))
+        for i, rs in enumerate(sorted_signals[:5], 1):
+            logger.info(
+                "  %d. %s: rank=%.2f (mom1h=%+.1f%%, vol=%.1fx, score=%d)",
+                i, rs.symbol, rs.combined_rank, rs.momentum_1h, rs.volume_spike, rs.score
+            )
+        
+        # Calculate how many we can take
+        available_slots = settings.max_positions - len(self.positions)
+        if available_slots <= 0:
+            logger.info("[BATCH] No position slots available")
+            self._signal_buffer.clear()
+            self._last_batch_flush = now
+            return 0
+        
+        # Take top N signals (best momentum)
+        to_execute = sorted_signals[:min(available_slots, 10)]
+        
+        # Execute in order of rank (best first)
+        opened = 0
+        for ranked_signal in to_execute:
+            try:
+                result = await self.open_position(ranked_signal.signal)
+                if result:
+                    opened += 1
+                    logger.info(
+                        "[BATCH] ✓ Opened %s (rank=%.2f, mom1h=%+.1f%%)",
+                        ranked_signal.symbol, ranked_signal.combined_rank, ranked_signal.momentum_1h
+                    )
+            except Exception as e:
+                logger.error("[BATCH] Error opening %s: %s", ranked_signal.symbol, e)
+        
+        # Clear buffer and reset timer
+        self._signal_buffer.clear()
+        self._last_batch_flush = now
+        
+        logger.info("[BATCH] Opened %d/%d positions", opened, len(to_execute))
+        return opened
 
     def _record_rejection(self, reason: str, symbol: str = "", details: dict = None):
         """Track rejection counters on shared state and log for analysis."""
@@ -808,14 +950,19 @@ class OrderRouter:
         # Count current position tiers
         whale_threshold = settings.whale_trade_usd * 0.8  # 80% of whale size
         strong_threshold = settings.strong_trade_usd * 0.8
+        scout_threshold = settings.scout_trade_usd * 0.8
+        
         whale_count = sum(1 for p in self.positions.values() 
                          if getattr(p, 'entry_cost_usd', 0) >= whale_threshold)
         strong_count = sum(1 for p in self.positions.values() 
                           if strong_threshold <= getattr(p, 'entry_cost_usd', 0) < whale_threshold)
+        scout_count = sum(1 for p in self.positions.values()
+                         if scout_threshold <= getattr(p, 'entry_cost_usd', 0) < strong_threshold * 0.8)
         
-        # Determine tier based on score + confluence (all from config)
+        # Determine tier based on score + confluence (BEAST MODE with Scout)
         is_whale = score >= settings.whale_score_min and confluence_count >= settings.whale_confluence_min
         is_strong = score >= settings.strong_score_min or confluence_count >= settings.whale_confluence_min
+        is_scout = score >= settings.scout_score_min  # Scout for learning
         
         if is_whale and whale_count < settings.whale_max_positions:
             size_usd = settings.whale_trade_usd
@@ -823,6 +970,9 @@ class OrderRouter:
         elif is_strong and strong_count < settings.strong_max_positions:
             size_usd = settings.strong_trade_usd
             tier = "💪 STRONG"
+        elif is_scout and scout_count < settings.scout_max_positions:
+            size_usd = settings.scout_trade_usd
+            tier = "🔍 SCOUT"  # Learning position
         else:
             size_usd = settings.normal_trade_usd
             tier = "📊 NORMAL"

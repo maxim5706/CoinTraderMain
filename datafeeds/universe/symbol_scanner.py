@@ -196,11 +196,11 @@ class SymbolScanner:
     and ranks by burst score every minute.
     """
     
-    # Eligibility thresholds (relaxed to include more coins)
-    MIN_VOLUME_24H = 500_000     # $500K minimum (was $2M)
-    MAX_SPREAD_BPS = 40          # 40 basis points max spread
-    MIN_PRICE = 0.001            # $0.001 minimum (was $0.03) - allows memes
-    MIN_TRADES_HOUR = 50         # At least 50 trades/hour
+    # Eligibility thresholds (ULTRA-AGGRESSIVE - include ALL coins with any volume)
+    MIN_VOLUME_24H = 100_000     # $100K minimum - catches ALL memes (PEPE, SHIB, etc)
+    MAX_SPREAD_BPS = 60          # 60 basis points - allow wider spreads for small caps
+    MIN_PRICE = 0.00001          # $0.00001 minimum - include micro-penny coins
+    MIN_TRADES_HOUR = 20         # Lower bar - 20 trades/hour is enough
     
     # Tier thresholds (24h volume USD)
     TIER_LARGE = 500_000_000     # >$500M = large cap (BTC, ETH)

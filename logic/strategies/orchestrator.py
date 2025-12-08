@@ -19,6 +19,13 @@ from .daily_momentum import DailyMomentumStrategy
 from .range_breakout import RangeBreakoutStrategy
 from .relative_strength import RelativeStrengthStrategy
 from .support_bounce import SupportBounceStrategy
+from .gap_fill import GapFillStrategy
+from .breakout_retest import BreakoutRetestStrategy
+from .correlation_play import CorrelationPlayStrategy
+from .liquidity_sweep import LiquiditySweepStrategy
+from .momentum_1h import Momentum1HStrategy
+from .rsi_momentum import RSIMomentumStrategy
+from .bb_expansion import BBExpansionStrategy
 
 
 @dataclass
@@ -31,12 +38,19 @@ class OrchestratorConfig:
     enable_range_breakout: bool = True   # Consolidation breakouts
     enable_relative_strength: bool = True # Outperformers vs BTC
     enable_support_bounce: bool = True    # Key level bounces
+    enable_gap_fill: bool = False         # SAFE MODE: Test later (currently untested)
+    enable_breakout_retest: bool = False  # SAFE MODE: Test later (currently untested)
+    enable_correlation_play: bool = False # SAFE MODE: Test later (currently untested)
+    enable_liquidity_sweep: bool = False  # SAFE MODE: Test later (currently untested)
+    enable_momentum_1h: bool = True       # MOMENTUM SUITE: Pure 1H momentum catcher
+    enable_rsi_momentum: bool = True      # MOMENTUM SUITE: RSI reset plays
+    enable_bb_expansion: bool = True      # MOMENTUM SUITE: Bollinger expansion
     enable_rotation: bool = False  # Future
     
     # Confluence settings
-    require_confluence: bool = True       # Require 2+ strategies to agree
-    confluence_boost: float = 15.0        # Score boost when confluence detected
-    solo_signal_penalty: float = 0.7      # Size multiplier for solo signals
+    require_confluence: bool = False      # Allow solo signals (was True - too restrictive)
+    confluence_boost: float = 20.0        # Score boost when confluence detected (increased)
+    solo_signal_penalty: float = 1.0      # No penalty for solo signals (was 0.7)
 
 
 class StrategyOrchestrator:
@@ -67,6 +81,20 @@ class StrategyOrchestrator:
             self.strategies.append(RelativeStrengthStrategy())
         if self.config.enable_support_bounce:
             self.strategies.append(SupportBounceStrategy())
+        if self.config.enable_gap_fill:
+            self.strategies.append(GapFillStrategy())
+        if self.config.enable_breakout_retest:
+            self.strategies.append(BreakoutRetestStrategy())
+        if self.config.enable_correlation_play:
+            self.strategies.append(CorrelationPlayStrategy())
+        if self.config.enable_liquidity_sweep:
+            self.strategies.append(LiquiditySweepStrategy())
+        if self.config.enable_momentum_1h:
+            self.strategies.append(Momentum1HStrategy())
+        if self.config.enable_rsi_momentum:
+            self.strategies.append(RSIMomentumStrategy())
+        if self.config.enable_bb_expansion:
+            self.strategies.append(BBExpansionStrategy())
         
         # Stats tracking
         self._signal_counts: Dict[str, int] = {}

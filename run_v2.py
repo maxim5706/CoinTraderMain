@@ -71,7 +71,7 @@ class TradingBotV2:
         # Track latest spread per symbol for FAST mode
         self._latest_spreads: dict[str, float] = {}
         self._running = False
-        self.stream_limit = 75  # Max symbols to stream at once (was 50, Coinbase allows more)
+        self.stream_limit = 150  # Max symbols to stream at once (gaming PC - full coverage!)
         self._last_hot_leader: Optional[str] = None
         self._last_rest_probe: Optional[datetime] = None
         self._focus_rotation_secs = 15
@@ -80,7 +80,7 @@ class TradingBotV2:
         self._last_focus_switch: Optional[datetime] = None
         self._focus_symbol: Optional[str] = None
         self._last_history_probe: Optional[datetime] = None
-        self._strategy_pool = 15  # Analyze top 15 symbols each loop to catch bursts
+        self._strategy_pool = 50  # Analyze top 50 symbols each loop (gaming PC can handle it)
         
         # Task handles
         self._clock_a_task: Optional[asyncio.Task] = None  # WebSocket
@@ -925,8 +925,8 @@ class TradingBotV2:
                 self.scanner.compute_hot_list(top_n=10)
                 self._log_hot_leader_change()
                 
-                # REST probe a few non-streamed symbols to improve spreads/eligibility
-                self._rest_probe(limit=5)
+                # REST probe more non-streamed symbols to improve spreads/eligibility (gaming PC)
+                self._rest_probe(limit=20)
                 
                 # Log burst metrics for hot list (Layer C)
                 now_utc = datetime.now(timezone.utc)

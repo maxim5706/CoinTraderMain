@@ -553,22 +553,36 @@ class DashboardV2:
                 expand=True
             )
 
-        icons = {
-            "open": "🟢",
-            "partial_close": "🟡",
-            "close": "🔴",
-        }
+        # Color scheme: Yellow=Buy, Green=Profitable exit, Red=Loss, Purple=Partial win
         lines = []
         for evt in orders[:8]:
-            icon = icons.get(getattr(evt, "event_type", ""), "⚪")
+            event_type = getattr(evt, "event_type", "")
+            pnl = getattr(evt, "pnl", None)
+            
+            # Choose icon based on event type and PnL
+            if event_type == "open":
+                icon = "🟡"  # Yellow = Buy order
+            elif event_type == "partial_close":
+                if pnl and pnl > 0:
+                    icon = "🟣"  # Purple = Partial win (TP1)
+                else:
+                    icon = "🟠"  # Orange = Partial neutral/loss
+            elif event_type == "close":
+                if pnl and pnl > 0:
+                    icon = "🟢"  # Green = Full exit with profit
+                else:
+                    icon = "🔴"  # Red = Full exit at loss
+            else:
+                icon = "⚪"  # White = Unknown
+            
             ts = getattr(evt, "ts", None)
             ts_str = ts.strftime("%H:%M:%S") if ts else ""
             sym = getattr(evt, "symbol", "").replace("-USD", "")
             size = getattr(evt, "size_usd", 0.0)
             price = getattr(evt, "price", 0.0)
             line = f"{icon} {sym:5} ${size:.0f} @ ${price:.2f}"
-            pnl = getattr(evt, "pnl", None)
-            if pnl is not None and getattr(evt, "event_type", "") != "open":
+            
+            if pnl is not None and event_type != "open":
                 pnl_color = "green" if pnl >= 0 else "red"
                 line += f" [{pnl_color}]{pnl:+.2f}[/]"
             if ts_str:
