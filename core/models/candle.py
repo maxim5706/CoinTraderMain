@@ -19,6 +19,22 @@ class Candle:
     close: float
     volume: float
     
+    def __post_init__(self):
+        """Validate candle data."""
+        if self.open <= 0 or self.high <= 0 or self.low <= 0 or self.close <= 0:
+            raise ValueError(f'Candle prices must be positive: O={self.open} H={self.high} L={self.low} C={self.close}')
+        if self.high < self.low:
+            raise ValueError(f'Candle high ({self.high}) < low ({self.low})')
+        if self.high < max(self.open, self.close):
+            raise ValueError(f'Candle high ({self.high}) < max(open, close)')
+        if self.low > min(self.open, self.close):
+            raise ValueError(f'Candle low ({self.low}) > min(open, close)')
+        if self.volume < 0:
+            raise ValueError(f'Candle volume cannot be negative: {self.volume}')
+    
+    def __repr__(self) -> str:
+        return f"Candle({self.timestamp.strftime('%H:%M')}, O={self.open:.4f}, H={self.high:.4f}, L={self.low:.4f}, C={self.close:.4f}, V={self.volume:.0f})"
+    
     @property
     def range(self) -> float:
         return self.high - self.low
@@ -190,4 +206,17 @@ class CandleBuffer:
         if self.candles_1m:
             return self.candles_1m[-1].close
         return 0.0
+    
+    def __repr__(self) -> str:
+        return (
+            f"CandleBuffer({self.symbol}, "
+            f"1m={len(self.candles_1m)}/{self.max_1m}, "
+            f"5m={len(self.candles_5m)}/{self.max_5m}, "
+            f"last=${self.last_price:.4f})"
+        )
+    
+    @property
+    def is_warm(self) -> bool:
+        """Check if buffer has minimum data for strategy analysis."""
+        return len(self.candles_1m) >= 20 and len(self.candles_5m) >= 5
 

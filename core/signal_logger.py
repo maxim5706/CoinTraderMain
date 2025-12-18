@@ -11,6 +11,7 @@ This creates training data for future ML models.
 """
 
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -65,7 +66,6 @@ class SignalLogger:
                 "direction": signal.direction.value if hasattr(signal.direction, 'value') else str(signal.direction),
                 "score": signal.edge_score_base,
                 "trend_score": signal.trend_score,
-                "setup_quality": signal.setup_quality,
                 "reasons": signal.reasons if hasattr(signal, 'reasons') else [],
                 "taken": taken,
                 "rejection_reason": rejection_reason,
@@ -83,7 +83,7 @@ class SignalLogger:
                 
                 # Signal metadata
                 "confluence_count": getattr(signal, 'confluence_count', 1),
-                "is_valid": signal.is_valid,
+                "is_valid": bool(signal.is_valid),  # Convert to native bool for JSON
                 
                 # For tracking outcomes later
                 "signal_id": f"{signal.symbol}_{int(datetime.now(timezone.utc).timestamp())}",
@@ -91,16 +91,17 @@ class SignalLogger:
             
             # Write to JSONL (one line per signal)
             with open(log_file, 'a') as f:
-                f.write(json.dumps(record) + '\n')
+                safe_record = self._sanitize_for_json(record)
+                f.write(json.dumps(safe_record) + '\n')
             
             self._signals_logged += 1
             
             # Log milestone
             if self._signals_logged % 100 == 0:
-                print(f"[SIGNAL_LOG] {self._signals_logged} signals logged to {log_file.name}")
+                logger.info("[SIGNAL_LOG] %d signals logged to %s", self._signals_logged, log_file.name)
         
         except Exception as e:
-            print(f"[SIGNAL_LOG] Error logging signal: {e}")
+            logger.warning("[SIGNAL_LOG] Error logging signal: %s", e)
     
     def log_outcome(
         self,
@@ -133,7 +134,35 @@ class SignalLogger:
                 f.write(json.dumps(record) + '\n')
         
         except Exception as e:
-            print(f"[SIGNAL_LOG] Error logging outcome: {e}")
+            logger.warning("[SIGNAL_LOG] Error logging outcome: %s", e)
+
+    def _sanitize_for_json(self, obj):
+        """Convert numpy/datetime/iterables to JSON-safe primitives."""
+        try:
+            import numpy as np  # type: ignore
+        except Exception:  # pragma: no cover - numpy may not be installed in tests
+            np = None
+
+        # Fast-path for primitives
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            if isinstance(obj, float) and not math.isfinite(obj):
+                return 0.0
+            return obj
+
+        if np and isinstance(obj, np.generic):
+            return self._sanitize_for_json(obj.item())
+
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+
+        if isinstance(obj, dict):
+            return {str(k): self._sanitize_for_json(v) for k, v in obj.items()}
+
+        if isinstance(obj, (list, tuple, set)):
+            return [self._sanitize_for_json(v) for v in obj]
+
+        # Fallback: string representation to avoid hard failure
+        return str(obj)
     
     def _get_log_file(self) -> Path:
         """Get log file for current day."""
@@ -143,7 +172,7 @@ class SignalLogger:
         # Update current file reference
         if self._current_file != log_file:
             self._current_file = log_file
-            print(f"[SIGNAL_LOG] Logging signals to: {log_file}")
+            logger.info("[SIGNAL_LOG] Logging signals to: %s", log_file)
         
         return log_file
     
@@ -188,7 +217,7 @@ class SignalLogger:
             return True
         
         except Exception as e:
-            print(f"[SIGNAL_LOG] Validation error: {e}")
+            logger.warning("[SIGNAL_LOG] Validation error: %s", e)
             return False
 
 

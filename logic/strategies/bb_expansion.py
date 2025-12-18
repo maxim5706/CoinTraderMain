@@ -125,14 +125,14 @@ class BBExpansionStrategy(BaseStrategy):
             direction=SignalDirection.LONG,
             edge_score_base=min(95, score),
             trend_score=55 + int(trend_5m * 5),
-            setup_quality=expansion_ratio - 1.0,  # Quality = expansion amount
+            entry_price=price,
+            stop_price=price * 0.965,  # 3.5% stop
             reasons=[
                 f"bb_breakout_{distance_pct:.1f}%_above",
                 f"expanding_{expansion_ratio:.2f}x",
                 f"momentum_{trend_5m:.1f}%",
                 f"vol_{vol_spike:.1f}x"
-            ],
-            is_valid=True
+            ]
         )
     
     def _calculate_bb(self, closes: np.ndarray, period: int = 20, std_dev: float = 2.0):

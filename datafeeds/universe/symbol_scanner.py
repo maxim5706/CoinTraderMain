@@ -109,8 +109,8 @@ class RateLimiter:
         }
 
 
-# Global rate limiter instance
-_rate_limiter = RateLimiter(requests_per_second=5.0, burst_size=10)
+# Global rate limiter instance - reduced to avoid 429 errors
+_rate_limiter = RateLimiter(requests_per_second=2.0, burst_size=3)
 
 
 @dataclass
@@ -219,6 +219,37 @@ class SymbolScanner:
         "PAX-USD", "BUSD-USD", "FRAX-USD"
     }
     
+    # Products that fail with "account not available" - loaded from file
+    _untradeable_products: set = set()
+    
+    @classmethod
+    def load_untradeable_products(cls):
+        """Load untradeable products from file."""
+        import json
+        from pathlib import Path
+        try:
+            path = Path("data/untradeable_products.json")
+            if path.exists():
+                with open(path) as f:
+                    products = json.load(f)
+                    cls._untradeable_products = set(products)
+                    logger.info("[SCANNER] Loaded %d untradeable products", len(cls._untradeable_products))
+        except Exception as e:
+            logger.warning("[SCANNER] Failed to load untradeable products: %s", e)
+    
+    @classmethod
+    def add_untradeable_product(cls, symbol: str):
+        """Add a product to the untradeable list and save."""
+        import json
+        from pathlib import Path
+        cls._untradeable_products.add(symbol)
+        try:
+            path = Path("data/untradeable_products.json")
+            with open(path, 'w') as f:
+                json.dump(list(cls._untradeable_products), f)
+        except Exception:
+            pass
+    
     def __init__(self):
         self.universe: dict[str, SymbolInfo] = {}
         self.burst_metrics: dict[str, BurstMetrics] = {}
@@ -230,6 +261,9 @@ class SymbolScanner:
         
         # Callbacks
         self.on_hot_list_update: Optional[Callable] = None
+        
+        # Load untradeable products on init
+        self.load_untradeable_products()
     
     def _init_client(self):
         """Initialize Coinbase REST client."""
@@ -328,8 +362,17 @@ class SymbolScanner:
                 is_eligible = True
                 skip_reason = ""
                 
+                # Skip untradeable products (fail with "account not available")
+                if product_id in self._untradeable_products:
+                    is_eligible = False
+                    skip_reason = "Untradeable on this account"
+                # Skip alias products (alias field non-empty means THIS product is an alias of another)
+                # alias_to means other products alias TO this one (this is the primary - keep it)
+                elif (alias_field := getattr(p, 'alias', None) or (p.get('alias', '') if isinstance(p, dict) else '')):
+                    is_eligible = False
+                    skip_reason = f"Is alias of {alias_field}"
                 # ALWAYS exclude stablecoins (no volatility = no profit)
-                if product_id in self.STABLECOINS:
+                elif product_id in self.STABLECOINS:
                     is_eligible = False
                     skip_reason = "Stablecoin - no volatility"
                 elif volume_usd < self.MIN_VOLUME_24H:
@@ -486,14 +529,16 @@ class SymbolScanner:
     def compute_hot_list(self, top_n: int = 10) -> HotList:
         """
         Rank all symbols by burst score and produce hot list.
+        Includes BOTH burst activity AND trending coins.
         Call after updating all burst metrics.
         """
         # Get all metrics, filter for eligible symbols
+        # RELAXED FILTER: Include burst activity OR trending coins
         eligible_metrics = [
             m for m in self.burst_metrics.values()
             if m.symbol in self.universe 
             and self.universe[m.symbol].is_eligible
-            and m.burst_score > 0
+            and (m.burst_score > 0 or abs(m.trend_15m) > 0.3 or m.vol_spike > 1.2)
         ]
         
         # Sort by burst score descending
@@ -545,11 +590,14 @@ class SymbolScanner:
         
         return result
     
-    def get_focus_symbol(self) -> Optional[str]:
-        """Get the current #1 focus symbol."""
+    def get_top_hot_symbol(self) -> Optional[str]:
+        """Get the current #1 hot list symbol (highest burst score)."""
         if self.hot_list.top:
             return self.hot_list.top.symbol
         return None
+    
+    # Alias for backward compatibility
+    get_focus_symbol = get_top_hot_symbol
     
     def refresh_spread_snapshots(self, symbols: list[str]):
         """

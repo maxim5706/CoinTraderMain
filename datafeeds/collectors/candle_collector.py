@@ -113,10 +113,10 @@ class CandleCollector:
                         mid = (float(bid) + float(ask)) / 2
                         if mid > 0:
                             spread_bps = round((float(ask) - float(bid)) / mid * 10000, 2)
-                    
+
                     # Call tick callback for real-time updates (with spread)
                     if self.on_tick:
-                        self.on_tick(symbol, price, spread_bps=spread_bps)
+                        self.on_tick(symbol, price, spread_bps=spread_bps if spread_bps is not None else 0.0)
                     
                     now = datetime.now(timezone.utc)
                     minute_key = now.replace(second=0, microsecond=0)
@@ -208,6 +208,11 @@ class CandleCollector:
         if self._last_message_time is None:
             return 0.0 if self._connected else 999.0
         return (datetime.now(timezone.utc) - self._last_message_time).total_seconds()
+
+    @property
+    def total_reconnects(self) -> int:
+        """Total reconnect attempts during this session."""
+        return getattr(self, "_total_reconnects", 0)
     
     async def _listen(self):
         """Main WebSocket listener loop."""

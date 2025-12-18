@@ -161,15 +161,15 @@ class Momentum1HStrategy(BaseStrategy):
             direction=SignalDirection.LONG,
             edge_score_base=min(100, score),
             trend_score=60 + int(trend_1h),  # Trend-following bias
-            setup_quality=min(1.0, trend_1h / 10),  # Quality based on momentum
+            entry_price=price,
+            stop_price=price * 0.965,  # 3.5% stop
             reasons=[
                 f"1h_momentum_{trend_1h:.1f}%",
                 f"15m_{trend_15m:.1f}%",
                 f"vol_{vol_spike:.1f}x",
                 "accelerating" if is_accelerating else "",
                 "atr_shock" if atr_shock else ""
-            ],
-            is_valid=True
+            ]
         )
     
     def reset(self, symbol: str):

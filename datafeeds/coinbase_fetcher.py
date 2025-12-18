@@ -21,7 +21,7 @@ _client: RESTClient | None = None
 class _TokenBucket:
     """Simple token bucket for global rate limiting."""
 
-    def __init__(self, rps: float = 8.0, burst: float = 8.0):
+    def __init__(self, rps: float = 4.0, burst: float = 4.0):  # Reduced from 8 to avoid 429s
         self.capacity = burst
         self.tokens = burst
         self.rps = rps
@@ -92,9 +92,9 @@ def fetch_history_windowed(
                 )
                 raw = getattr(resp, "candles", None) or []
                 for c in raw:
-                    ts = datetime.fromtimestamp(int(getattr(c, "start", 0)), tz=timezone.utc)
-                    candles.append(
-                        Candle(
+                    try:
+                        ts = datetime.fromtimestamp(int(getattr(c, "start", 0)), tz=timezone.utc)
+                        candle = Candle(
                             timestamp=ts,
                             open=float(getattr(c, "open", 0) or 0),
                             high=float(getattr(c, "high", 0) or 0),
@@ -102,7 +102,11 @@ def fetch_history_windowed(
                             close=float(getattr(c, "close", 0) or 0),
                             volume=float(getattr(c, "volume", 0) or 0),
                         )
-                    )
+                        candles.append(candle)
+                    except ValueError as e:
+                        # Skip invalid candles (Candle.__post_init__ validation failed)
+                        logger.debug("[CB-FETCH] Skipping invalid candle for %s: %s", symbol, e)
+                        continue
                 break  # chunk succeeded
             except Exception as e:
                 is_rate = "429" in str(e) or "Too Many Requests" in str(e)

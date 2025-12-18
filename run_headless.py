@@ -27,26 +27,20 @@ print(f"CoinTrader Bot - Headless Mode")
 print(f"Started: {datetime.now(timezone.utc).isoformat()}")
 print(f"{'='*80}\n")
 
-from run_v2 import BotV2
+from run_v2 import TradingBotV2
 from core.config import settings
-from core.mode_configs import TradingMode
 
 
 async def run_headless():
     """Run bot in headless mode."""
     
-    # Determine mode from env
-    mode_str = settings.trading_mode.upper() if hasattr(settings, 'trading_mode') else "PAPER"
-    mode = TradingMode.LIVE if mode_str == "LIVE" else TradingMode.PAPER
-    
-    print(f"[HEADLESS] Mode: {mode.value}")
     print(f"[HEADLESS] Max positions: {settings.max_positions}")
     print(f"[HEADLESS] Daily max loss: ${settings.daily_max_loss_usd}")
     print(f"[HEADLESS] Entry score min: {settings.entry_score_min}")
     print()
     
     # Create bot instance
-    bot = BotV2(mode=mode, headless=True)
+    bot = TradingBotV2()
     
     # Setup signal handlers for graceful shutdown
     def signal_handler(sig, frame):

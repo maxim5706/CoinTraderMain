@@ -79,7 +79,7 @@ def sync_with_exchange(
             portfolio_uuid = getattr(portfolio_list[0], "uuid", None) or portfolio_list[0].get("uuid")
 
         if not portfolio_uuid:
-            print("[SYNC] Could not get portfolio UUID")
+            logger.warning("[SYNC] Could not get portfolio UUID")
             return positions
 
         breakdown_resp = client.get_portfolio_breakdown(portfolio_uuid)
@@ -87,7 +87,7 @@ def sync_with_exchange(
         spot_positions = getattr(breakdown, "spot_positions", [])
 
         if not quiet:
-            print(f"[SYNC] Portfolio has {len(spot_positions)} spot positions")
+            logger.info("[SYNC] Portfolio has %d spot positions", len(spot_positions))
 
         real_holdings = {}
 
@@ -134,6 +134,55 @@ def sync_with_exchange(
             if is_cash or asset in ["USD", "USDC"]:
                 continue
 
+            # Skip dust positions that are below trading minimums
+            from core.helpers import is_dust
+            if is_dust(value_usd):
+                logger.info(
+                    "[SYNC] Skipping dust position %s ($%.4f < $%.2f)",
+                    symbol,
+                    value_usd,
+                    settings.position_min_usd,
+                )
+                continue
+
+            # SELF-HEALING: Handle invalid or missing entry prices
+            current_price_per_unit = value_usd / qty if qty > 0 else 0
+            
+            if entry_price <= 0:
+                # Invalid entry price from exchange - use current price as fallback
+                logger.warning(
+                    "[SYNC] %s has invalid entry_price=0, using current price $%.4f",
+                    symbol, current_price_per_unit
+                )
+                entry_price = current_price_per_unit
+            
+            # SELF-HEALING: Detect underwater synced positions
+            # If current price is significantly below entry, the stop would trigger immediately
+            # Instead, set a REALISTIC stop based on current price to give position room to recover
+            pnl_pct = ((current_price_per_unit / entry_price) - 1) * 100 if entry_price > 0 else 0
+            original_stop = entry_price * (1 - settings.fixed_stop_pct)
+            
+            if pnl_pct < -settings.fixed_stop_pct * 100:
+                # Position is ALREADY underwater beyond normal stop level
+                # Use current price for stop calculation to avoid immediate exit
+                effective_stop = current_price_per_unit * (1 - settings.fixed_stop_pct)
+                logger.warning(
+                    "[SYNC] %s is %.1f%% underwater (entry=$%.4f, now=$%.4f). "
+                    "Setting realistic stop at $%.4f instead of $%.4f",
+                    symbol, pnl_pct, entry_price, current_price_per_unit,
+                    effective_stop, original_stop
+                )
+                stop_price = effective_stop
+                # Also adjust TPs to be realistic from current price
+                tp1_price = current_price_per_unit * (1 + settings.tp1_pct)
+                tp2_price = current_price_per_unit * (1 + settings.tp2_pct)
+                strategy_id = "sync_underwater"  # Mark for special handling
+            else:
+                stop_price = original_stop
+                tp1_price = entry_price * (1 + settings.tp1_pct)
+                tp2_price = entry_price * (1 + settings.tp2_pct)
+                strategy_id = "sync"
+
             position = Position(
                 symbol=symbol,
                 side=Side.BUY,
@@ -141,11 +190,11 @@ def sync_with_exchange(
                 entry_time=datetime.now(timezone.utc),
                 size_usd=value_usd,
                 size_qty=qty,
-                stop_price=entry_price * (1 - settings.fixed_stop_pct),
-                tp1_price=entry_price * (1 + settings.tp1_pct),
-                tp2_price=entry_price * (1 + settings.tp2_pct),
+                stop_price=stop_price,
+                tp1_price=tp1_price,
+                tp2_price=tp2_price,
                 state=PositionState.OPEN,
-                strategy_id="sync",
+                strategy_id=strategy_id,
                 entry_cost_usd=cost_basis,
                 realized_pnl=0.0,
                 partial_closed=False,

@@ -19,6 +19,10 @@ import json
 import time
 from decimal import Decimal, ROUND_HALF_UP
 
+from core.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 from core.config import settings
 from execution.order_utils import (
     rate_limiter, with_retry, OrderResult, parse_order_response,
@@ -110,7 +114,7 @@ class OrderManager:
         Returns number of orders synced.
         """
         if not self._client:
-            print("[ORDERS] No client, skipping sync")
+            logger.info("[ORDERS] No client, skipping sync")
             return 0
         
         try:
@@ -135,7 +139,7 @@ class OrderManager:
                     synced += 1
             
             self._last_sync = datetime.now(timezone.utc)
-            print(f"[ORDERS] Synced {synced} orders ({len(open_list)} open, {len(filled_list)} recent)")
+            logger.info("[ORDERS] Synced %d orders (%d open, %d recent)", synced, len(open_list), len(filled_list))
             
             # Identify stop orders and link to positions
             self._link_stop_orders()
@@ -143,7 +147,7 @@ class OrderManager:
             return synced
             
         except Exception as e:
-            print(f"[ORDERS] Sync failed: {e}")
+            logger.warning("[ORDERS] Sync failed: %s", e)
             return 0
     
     def _parse_order(self, order) -> Optional[ManagedOrder]:
@@ -193,7 +197,7 @@ class OrderManager:
                 is_stop_order=is_stop
             )
         except Exception as e:
-            print(f"[ORDERS] Failed to parse order: {e}")
+            logger.warning("[ORDERS] Failed to parse order: %s", e)
             return None
     
     def _link_stop_orders(self):
@@ -204,7 +208,7 @@ class OrderManager:
                 if symbol not in self._position_orders:
                     self._position_orders[symbol] = PositionOrders(symbol=symbol)
                 self._position_orders[symbol].stop_order_id = order_id
-                print(f"[ORDERS] Linked stop order {order_id[:8]}... to {symbol}")
+                logger.info("[ORDERS] Linked stop order %s... to %s", order_id[:8], symbol)
     
     def place_stop_order(
         self,
@@ -219,7 +223,7 @@ class OrderManager:
         Returns order_id if successful.
         """
         if not self._client:
-            print("[ORDERS] No client, can't place stop order")
+            logger.info("[ORDERS] No client, can't place stop order")
             return None
 
         # Resolve price and size increments
@@ -270,7 +274,7 @@ class OrderManager:
         if existing_stop and existing_stop.status == OrderStatus.OPEN:
             # Consider it the same if within one price increment
             if abs(existing_stop.stop_price - stop_price) < price_increment:
-                print(f"[ORDERS] Reusing existing stop for {symbol} @ ${existing_stop.stop_price:.4f}")
+                logger.info("[ORDERS] Reusing existing stop for %s @ $%.4f", symbol, existing_stop.stop_price)
                 return existing_stop.order_id
         
         client_order_id = f"stop_{symbol}_{int(datetime.now().timestamp())}"
@@ -281,12 +285,17 @@ class OrderManager:
                 # Rate limit
                 rate_limiter.wait_if_needed()
                 
+                # Format numbers to avoid scientific notation (e.g. 2.2e-05)
+                qty_str = f"{qty:.8f}".rstrip('0').rstrip('.')
+                stop_str = f"{stop_price:.8f}".rstrip('0').rstrip('.')
+                limit_str = f"{limit_price:.8f}".rstrip('0').rstrip('.')
+                
                 order = self._client.stop_limit_order_gtc_sell(
                     client_order_id=client_order_id,
                     product_id=symbol,
-                    base_size=str(qty),
-                    stop_price=str(stop_price),
-                    limit_price=str(limit_price),
+                    base_size=qty_str,
+                    stop_price=stop_str,
+                    limit_price=limit_str,
                     # Required by Advanced Trade API to indicate stop direction
                     stop_direction="STOP_DIRECTION_STOP_DOWN",
                 )
@@ -323,7 +332,7 @@ class OrderManager:
                         self._position_orders[symbol] = PositionOrders(symbol=symbol)
                     self._position_orders[symbol].stop_order_id = order_id
                     
-                    print(f"[ORDERS] ✅ Stop order placed: {symbol} @ ${stop_price:.4f} (limit ${limit_price:.4f})")
+                    logger.info("[ORDERS] Stop order placed: %s @ $%.4f (limit $%.4f)", symbol, stop_price, limit_price)
                     
                     # Log stop order placement
                     from core.logger import log_stop_order, utc_iso_str
@@ -347,9 +356,9 @@ class OrderManager:
                         err_detail = order.get("error_response")
 
                     if err_detail:
-                        print(f"[ORDERS] Stop order rejected: {err_detail}")
+                        logger.warning("[ORDERS] Stop order rejected: %s", err_detail)
                     else:
-                        print(f"[ORDERS] Stop order placed but no ID returned")
+                        logger.info("[ORDERS] Stop order placed but no ID returned")
                     return None
                     
             except Exception as e:
@@ -358,15 +367,15 @@ class OrderManager:
                 
                 # Don't retry fatal errors
                 if 'insufficient' in error_str or 'invalid' in error_str:
-                    print(f"[ORDERS] ❌ Fatal error placing stop: {e}")
+                    logger.error("[ORDERS] Fatal error placing stop: %s", e)
                     return None
                 
                 if attempt < max_retries - 1:
                     delay = 0.5 * (2 ** attempt)  # Exponential backoff
-                    print(f"[ORDERS] ⚠️ Retry {attempt + 1}/{max_retries} for stop order: {e}")
+                    logger.warning("[ORDERS] Retry %d/%d for stop order: %s", attempt + 1, max_retries, e)
                     time.sleep(delay)
         
-        print(f"[ORDERS] ❌ Failed to place stop after {max_retries} attempts: {last_error}")
+        logger.error("[ORDERS] Failed to place stop after %d attempts: %s", max_retries, last_error)
         return None
     
     def cancel_stop_order(self, symbol: str) -> bool:
@@ -376,7 +385,7 @@ class OrderManager:
         
         pos_orders = self._position_orders.get(symbol)
         if not pos_orders or not pos_orders.stop_order_id:
-            print(f"[ORDERS] No stop order found for {symbol}")
+            logger.info("[ORDERS] No stop order found for %s", symbol)
             return True  # Nothing to cancel
         
         order_id = pos_orders.stop_order_id
@@ -389,11 +398,11 @@ class OrderManager:
                 self._orders[order_id].status = OrderStatus.CANCELLED
             pos_orders.stop_order_id = None
             
-            print(f"[ORDERS] ✅ Cancelled stop order for {symbol}")
+            logger.info("[ORDERS] Cancelled stop order for %s", symbol)
             return True
             
         except Exception as e:
-            print(f"[ORDERS] Failed to cancel stop order: {e}")
+            logger.warning("[ORDERS] Failed to cancel stop order: %s", e)
             return False
     
     def get_open_orders(self, symbol: Optional[str] = None) -> List[ManagedOrder]:

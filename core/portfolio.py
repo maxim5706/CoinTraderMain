@@ -16,6 +16,9 @@ from typing import Optional, Dict, List
 from coinbase.rest import RESTClient
 
 from core.config import settings
+from core.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -88,7 +91,7 @@ class PortfolioTracker:
             )
             return True
         except Exception as e:
-            print(f"[PORTFOLIO] Failed to init client: {e}")
+            logger.warning("[PORTFOLIO] Failed to init client: %s", e)
             return False
     
     def _get_portfolio_uuid(self) -> Optional[str]:
@@ -107,7 +110,7 @@ class PortfolioTracker:
                 ptype = getattr(p, 'type', '') or p.get('type', '')
                 if ptype == 'DEFAULT':
                     self._portfolio_uuid = getattr(p, 'uuid', None) or p.get('uuid')
-                    print(f"[PORTFOLIO] Using portfolio: {self._portfolio_uuid}")
+                    logger.info("[PORTFOLIO] Using portfolio: %s", self._portfolio_uuid)
                     return self._portfolio_uuid
             
             # Use first one if no DEFAULT
@@ -117,7 +120,7 @@ class PortfolioTracker:
                 return self._portfolio_uuid
                 
         except Exception as e:
-            print(f"[PORTFOLIO] Failed to get portfolios: {e}")
+            logger.warning("[PORTFOLIO] Failed to get portfolios: %s", e)
             
         return None
     
@@ -227,7 +230,7 @@ class PortfolioTracker:
             return snapshot
             
         except Exception as e:
-            print(f"[PORTFOLIO] Failed to get breakdown: {e}")
+            logger.warning("[PORTFOLIO] Failed to get breakdown: %s", e)
             import traceback
             traceback.print_exc()
             return None
@@ -255,7 +258,7 @@ class PortfolioTracker:
         """Print portfolio summary."""
         snapshot = self.get_snapshot()
         if not snapshot:
-            print("[PORTFOLIO] No data")
+            logger.info("[PORTFOLIO] No data")
             return
         
         print(f"\n{'='*60}")

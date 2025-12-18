@@ -29,8 +29,31 @@ class LivePortfolioManager(IPortfolioManager):
         self._usd_balance: float = 0.0
         self._product_info: dict[str, dict] = {}
         self._last_portfolio_update: float = 0
+        self._portfolio_uuid: Optional[str] = None
         self._init_live_client()
+        self._fetch_portfolio_uuid()
         self.update_portfolio_state()
+    
+    def _fetch_portfolio_uuid(self) -> None:
+        """Fetch the default portfolio UUID for API calls."""
+        if not self._client:
+            return
+        try:
+            portfolios = self._client.get_portfolios()
+            for p in getattr(portfolios, 'portfolios', []):
+                p_type = p.get('type') if isinstance(p, dict) else getattr(p, 'type', '')
+                p_uuid = p.get('uuid') if isinstance(p, dict) else getattr(p, 'uuid', '')
+                if p_type == 'DEFAULT' and p_uuid:
+                    self._portfolio_uuid = p_uuid
+                    logger.info("[ORDER] Using portfolio UUID: %s", p_uuid)
+                    return
+            # Fallback to first portfolio
+            if portfolios.portfolios:
+                first = portfolios.portfolios[0]
+                self._portfolio_uuid = first.get('uuid') if isinstance(first, dict) else getattr(first, 'uuid', '')
+                logger.info("[ORDER] Using first portfolio UUID: %s", self._portfolio_uuid)
+        except Exception as e:
+            logger.warning("[ORDER] Failed to fetch portfolio UUID: %s", e)
 
     def _init_live_client(self) -> None:
         if not self.config.api_key or not self.config.api_secret:
@@ -87,39 +110,69 @@ class LivePortfolioManager(IPortfolioManager):
         self._last_portfolio_update = now
         
         try:
-            accounts = self._client.get_accounts()
+            # First try to get balance from portfolio breakdown (most reliable)
             usd_bal = 0.0
-            usdc_bal = 0.0
             holdings_value = 0.0
             self._exchange_holdings = {}
+            
+            try:
+                if not self._portfolio_uuid:
+                    self._fetch_portfolio_uuid()
+                if self._portfolio_uuid:
+                    breakdown = self._client.get_portfolio_breakdown(self._portfolio_uuid)
+                else:
+                    breakdown = None
+                if breakdown and hasattr(breakdown, 'breakdown'):
+                    pb = breakdown.breakdown
+                    if isinstance(pb, dict):
+                        balances = pb.get('portfolio_balances', {})
+                    else:
+                        balances = getattr(pb, 'portfolio_balances', {})
+                    
+                    if isinstance(balances, dict):
+                        cash_bal = balances.get('total_cash_equivalent_balance', {})
+                        crypto_bal = balances.get('total_crypto_balance', {})
+                        usd_bal = float(cash_bal.get('value', 0) if isinstance(cash_bal, dict) else getattr(cash_bal, 'value', 0))
+                        holdings_value = float(crypto_bal.get('value', 0) if isinstance(crypto_bal, dict) else getattr(crypto_bal, 'value', 0))
+                        logger.info("[ORDER] Portfolio breakdown: cash=$%.2f, crypto=$%.2f", usd_bal, holdings_value)
+            except Exception as e:
+                logger.warning("[ORDER] Portfolio breakdown failed, falling back to accounts: %s", e)
+            
+            # Fallback: try get_accounts() if breakdown failed
+            if usd_bal == 0 and holdings_value == 0:
+                accounts = self._client.get_accounts()
+                usdc_bal = 0.0
 
-            for acct in getattr(accounts, "accounts", []):
-                currency = getattr(acct, "currency", "")
-                bal = getattr(acct, "available_balance", {})
-                value = float(bal.get("value", 0) if isinstance(bal, dict) else getattr(bal, "value", 0))
+                for acct in getattr(accounts, "accounts", []):
+                    currency = getattr(acct, "currency", "")
+                    bal = getattr(acct, "available_balance", {})
+                    value = float(bal.get("value", 0) if isinstance(bal, dict) else getattr(bal, "value", 0))
 
-                if currency == "USD":
-                    usd_bal = value
-                elif currency == "USDC":
-                    usdc_bal = value
-                elif value > 0.0001:
-                    symbol = f"{currency}-USD"
-                    delisted = {"BOND-USD", "NU-USD", "CLV-USD", "SNX-USD", "MANA-USD", "CGLD-USD"}
-                    if symbol in delisted:
-                        continue
+                    if currency == "USD":
+                        usd_bal = value
+                    elif currency == "USDC":
+                        usdc_bal = value
+                    elif value > 0.0001:
+                        symbol = f"{currency}-USD"
+                        delisted = {"BOND-USD", "NU-USD", "CLV-USD", "SNX-USD", "MANA-USD", "CGLD-USD"}
+                        if symbol in delisted:
+                            continue
 
-                    price = self._get_cached_price(symbol)
-                    if price > 0:
-                        position_value = value * price
-                        holdings_value += position_value
-                        if position_value >= 1.0:
-                            self._exchange_holdings[symbol] = position_value
+                        price = self._get_cached_price(symbol)
+                        if price > 0:
+                            position_value = value * price
+                            holdings_value += position_value
+                            if position_value >= 1.0:
+                                self._exchange_holdings[symbol] = position_value
 
-            self._usd_balance = usd_bal + usdc_bal
+                usd_bal = usd_bal + usdc_bal
+
+            self._usd_balance = usd_bal
             self._portfolio_value = self._usd_balance + holdings_value
 
             if self._portfolio_value < 50:
-                logger.warning("[ORDER] API balance low ($%s), using fallback", f"{self._portfolio_value:.2f}")
+                logger.warning("[ORDER] API balance low ($%s), trying fallback", f"{self._portfolio_value:.2f}")
+                # Last resort: set a fallback so the bot can at least operate
                 self._portfolio_value = 500.0
                 self._usd_balance = 450.0
 
@@ -154,6 +207,7 @@ class LivePortfolioManager(IPortfolioManager):
                 "quote_min": float(getattr(product, "quote_min_size", 1) or 1),
                 "base_min": float(getattr(product, "base_min_size", 0.0001) or 0.0001),
                 "base_increment": float(getattr(product, "base_increment", 0.0001) or 0.0001),
+                "price_increment": float(getattr(product, "price_increment", 0.01) or 0.01),
             }
             self._product_info[symbol] = info
             return info

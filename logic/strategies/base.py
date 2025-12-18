@@ -7,8 +7,11 @@ All strategies inherit from BaseStrategy and produce StrategySignal objects.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import logging
 from typing import Optional, List
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 
 class SignalDirection(Enum):
@@ -82,6 +85,51 @@ class StrategySignal:
     def total_score(self) -> float:
         """Alias for edge_score_base (ML boost applied later in funnel)."""
         return self.edge_score_base
+    
+    def validate(self) -> tuple[bool, str]:
+        """
+        Validate signal has proper risk parameters.
+        Returns (is_valid, error_message).
+        """
+        errors = []
+        
+        if self.direction == SignalDirection.NONE:
+            errors.append('no direction')
+        
+        if self.entry_price <= 0:
+            errors.append(f'invalid entry_price={self.entry_price}')
+        
+        if self.stop_price <= 0:
+            errors.append(f'invalid stop_price={self.stop_price}')
+        
+        # For LONG: stop must be below entry
+        if self.direction == SignalDirection.LONG:
+            if self.stop_price >= self.entry_price:
+                errors.append(f'LONG stop ({self.stop_price}) >= entry ({self.entry_price})')
+            if self.tp1_price > 0 and self.tp1_price <= self.entry_price:
+                errors.append(f'LONG tp1 ({self.tp1_price}) <= entry ({self.entry_price})')
+        
+        # For SHORT: stop must be above entry
+        if self.direction == SignalDirection.SHORT:
+            if self.stop_price <= self.entry_price:
+                errors.append(f'SHORT stop ({self.stop_price}) <= entry ({self.entry_price})')
+            if self.tp1_price > 0 and self.tp1_price >= self.entry_price:
+                errors.append(f'SHORT tp1 ({self.tp1_price}) >= entry ({self.entry_price})')
+        
+        # R:R sanity check
+        if self.rr_ratio < 0:
+            errors.append(f'negative rr_ratio={self.rr_ratio}')
+        
+        if errors:
+            return False, '; '.join(errors)
+        return True, 'OK'
+    
+    def __repr__(self) -> str:
+        return (
+            f"StrategySignal({self.symbol}, {self.strategy_id}, "
+            f"score={self.edge_score_base:.0f}, entry={self.entry_price:.4f}, "
+            f"stop={self.stop_price:.4f}, rr={self.rr_ratio:.1f})"
+        )
 
 
 class BaseStrategy(ABC):

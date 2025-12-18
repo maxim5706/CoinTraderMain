@@ -21,6 +21,9 @@ logger = get_logger(__name__)
 
 class LiveExecutor(IExecutor):
     """Executes real orders on Coinbase via the Advanced Trade client."""
+    
+    # Products that fail with "account not available" - skip these
+    _untradeable_products: set = set()
 
     def __init__(self, config: LiveModeConfig, portfolio=None, stop_manager=None):
         from core.live_portfolio import LivePortfolioManager
@@ -64,31 +67,75 @@ class LiveExecutor(IExecutor):
         result: OrderResult | None = None
         last_error: Exception | None = None
 
+        # Skip products known to be untradeable on this account
+        if symbol in self._untradeable_products:
+            logger.warning("[LIVE] Skipping %s - marked as untradeable", symbol)
+            return None
+        
         for attempt in range(max_retries):
             try:
                 rate_limiter.wait_if_needed()
+                # Get portfolio UUID from portfolio manager
+                portfolio_uuid = getattr(self.portfolio, '_portfolio_uuid', None)
+                logger.info("[LIVE] Placing order for %s with portfolio_uuid=%s", symbol, portfolio_uuid)
+                
                 if self.config.use_limit_orders:
                     limit_price = calculate_limit_buy_price(price, buffer_pct=self.config.limit_buffer_pct)
+                    base_size = size_usd / limit_price
+                    
+                    # Round to product precision to avoid INVALID_PRICE_PRECISION errors
+                    product_info = self.portfolio.get_product_info(symbol) if self.portfolio else {}
+                    price_inc = float(product_info.get('price_increment', 0.01) or 0.01)
+                    base_inc = float(product_info.get('base_increment', 0.0001) or 0.0001)
+                    
+                    # Round down to increment
+                    import math
+                    price_decimals = max(0, -int(math.log10(price_inc))) if price_inc > 0 else 2
+                    base_decimals = max(0, -int(math.log10(base_inc))) if base_inc > 0 else 4
+                    limit_price = round(limit_price, price_decimals)
+                    base_size = round(base_size, base_decimals)
+                    
+                    # Format to avoid scientific notation (e.g. 2.2e-05)
+                    base_str = f"{base_size:.8f}".rstrip('0').rstrip('.')
+                    price_str = f"{limit_price:.8f}".rstrip('0').rstrip('.')
+                    logger.info("[LIVE] Limit order: %s base_size=%s limit_price=%s", symbol, base_str, price_str)
                     order = client.limit_order_gtc_buy(
                         client_order_id=order_id,
                         product_id=symbol,
-                        base_size=str(size_usd / limit_price),
-                        limit_price=str(limit_price),
+                        base_size=base_str,
+                        limit_price=price_str,
+                        retail_portfolio_id=portfolio_uuid  # Use correct portfolio
                     )
+                    logger.info("[LIVE] Order response: %s", order)
                     result = parse_order_response(order, expected_qty=qty, market_price=price)
+                    logger.info("[LIVE] Parsed: success=%s error=%s fill_qty=%s", result.success, result.error, result.fill_qty)
                 else:
                     order = client.market_order_buy(
                         client_order_id=order_id,
                         product_id=symbol,
                         quote_size=str(size_usd),
+                        retail_portfolio_id=portfolio_uuid  # Use correct portfolio
                     )
+                    logger.info("[LIVE] Order response for %s: %s", symbol, order)
                     result = parse_order_response(order, expected_quote=size_usd, market_price=price)
+                    logger.info("[LIVE] Parsed result: success=%s, error=%s, fill_qty=%s", result.success, result.error, result.fill_qty)
 
                 if result.success:
                     break
                 raise Exception(result.error or "Order failed")
             except Exception as e:
                 last_error = e
+                # Detect untradeable products and blacklist them
+                if "account is not available" in str(e).lower():
+                    self._untradeable_products.add(symbol)
+                    # Also persist to scanner's untradeable list
+                    try:
+                        from datafeeds.universe.symbol_scanner import SymbolScanner
+                        SymbolScanner.add_untradeable_product(symbol)
+                    except Exception:
+                        pass
+                    logger.warning("[LIVE] %s marked as untradeable (account not available)", symbol)
+                    return None
                 if attempt < max_retries - 1:
                     delay = 0.5 * (2**attempt)
                     logger.warning("[LIVE] Retry %s/%s: %s", attempt + 1, max_retries, e)
@@ -145,10 +192,13 @@ class LiveExecutor(IExecutor):
 
         # Cancel stop before closing
         self.stop_manager.cancel_stop_order(position.symbol)
+        # Get portfolio UUID
+        portfolio_uuid = getattr(self.portfolio, '_portfolio_uuid', None)
         order = client.market_order_sell(
             client_order_id=f"ct_sell_{position.symbol}_{int(datetime.now().timestamp())}",
             product_id=position.symbol,
             base_size=str(position.size_qty),
+            retail_portfolio_id=portfolio_uuid,
         )
         success = getattr(order, "success", None) or (order.get("success") if isinstance(order, dict) else True)
         if not success:

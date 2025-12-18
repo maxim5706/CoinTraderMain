@@ -15,6 +15,7 @@ import time
 
 from core.logging_utils import get_logger
 from core.models import Candle, CandleBuffer
+from core.helpers import validate_candles
 
 logger = get_logger(__name__)
 
@@ -22,15 +23,16 @@ logger = get_logger(__name__)
 @dataclass
 class RateLimitState:
     """Tracks rate limit status."""
-    tokens: float = 10.0           # Current tokens
-    max_tokens: float = 10.0       # Max tokens (Coinbase ~10 req/sec)
-    refill_rate: float = 8.0       # Tokens per second (conservative)
+    tokens: float = 4.0            # Current tokens (reduced to avoid 429s)
+    max_tokens: float = 4.0        # Max tokens (conservative)
+    refill_rate: float = 3.0       # Tokens per second (very conservative)
     last_refill: float = 0.0       # Timestamp of last refill
     
     # Degradation state
     is_degraded: bool = False
     degraded_until: Optional[datetime] = None
     consecutive_429s: int = 0
+    total_429s: int = 0
     
     def refill(self):
         """Refill tokens based on elapsed time."""
@@ -58,6 +60,7 @@ class RateLimitState:
     def record_429(self):
         """Record a 429 rate limit response."""
         self.consecutive_429s += 1
+        self.total_429s += 1
         self.is_degraded = True
         # Back off exponentially
         backoff = min(60, 2 ** self.consecutive_429s)
@@ -109,6 +112,8 @@ class RestPoller:
         self.polls_tier2 = 0
         self.polls_tier3 = 0
         self.errors = 0
+        self.total_requests = 0
+        self.total_429s = 0
     
     async def start(self, tier_scheduler):
         """Start polling loops."""
@@ -129,12 +134,12 @@ class RestPoller:
         """Fast polling loop for Tier 2 symbols (every 15s)."""
         while self._running:
             try:
-                await asyncio.sleep(15)
+                await asyncio.sleep(30)  # Increased from 15s to reduce rate limits
                 
                 if not self._running:
                     break
                 
-                symbols = tier_scheduler.get_tier2_symbols()
+                symbols = tier_scheduler.get_tier2_symbols()[:10]  # Limit to top 10 symbols
                 if not symbols:
                     continue
                 
@@ -151,7 +156,7 @@ class RestPoller:
         """Slow polling loop for Tier 3 symbols (every 60s)."""
         while self._running:
             try:
-                await asyncio.sleep(60)
+                await asyncio.sleep(120)  # Increased from 60s to reduce rate limits
                 
                 if not self._running:
                     break
@@ -161,7 +166,7 @@ class RestPoller:
                     logger.info("[POLLER] Skipping Tier 3 (rate limit degraded)")
                     continue
                 
-                symbols = tier_scheduler.get_tier3_symbols()
+                symbols = tier_scheduler.get_tier3_symbols()[:5]  # Limit to top 5 symbols
                 if not symbols:
                     continue
                 
@@ -176,7 +181,7 @@ class RestPoller:
     
     async def _poll_batch(self, symbols: List[str], tier_scheduler, is_tier2: bool):
         """Poll a batch of symbols with rate limiting."""
-        batch_size = 5 if is_tier2 else 3  # Smaller batches for Tier 3
+        batch_size = 3 if is_tier2 else 2  # Smaller batches to avoid rate limits
         
         for i in range(0, len(symbols), batch_size):
             batch = symbols[i:i + batch_size]
@@ -199,6 +204,7 @@ class RestPoller:
                 if isinstance(result, Exception):
                     self.errors += 1
                     if "429" in str(result):
+                        self.total_429s += 1
                         self.rate_limit.record_429()
                 else:
                     self.rate_limit.record_success()
@@ -206,6 +212,7 @@ class RestPoller:
                         self.polls_tier2 += 1
                     else:
                         self.polls_tier3 += 1
+                self.total_requests += 1
             
             # Small delay between batches
             await asyncio.sleep(0.5)
@@ -214,13 +221,12 @@ class RestPoller:
         """Poll a single symbol for candles."""
         try:
             # Fetch 1m candles (30 min lookback for fast refresh)
-            candles_1m = await asyncio.to_thread(
-                self.fetch_candles, symbol, 60, 30
+            candles_1m = validate_candles(
+                await asyncio.to_thread(self.fetch_candles, symbol, 60, 30)
             )
-            
             # Fetch 5m candles (60 min lookback)
-            candles_5m = await asyncio.to_thread(
-                self.fetch_candles, symbol, 300, 60
+            candles_5m = validate_candles(
+                await asyncio.to_thread(self.fetch_candles, symbol, 300, 60)
             )
             
             # Update tier scheduler with candle counts
@@ -269,6 +275,8 @@ class RestPoller:
             "polls_tier2": self.polls_tier2,
             "polls_tier3": self.polls_tier3,
             "errors": self.errors,
+            "requests": self.total_requests,
+            "total_429s": self.total_429s,
             "rate_tokens": self.rate_limit.tokens,
             "is_degraded": self.rate_limit.is_degraded,
             "consecutive_429s": self.rate_limit.consecutive_429s,

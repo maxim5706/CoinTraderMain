@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import wraps
 
+from core.logging_utils import get_logger
+
+logger = get_logger(__name__)
+
 T = TypeVar('T')
 
 
@@ -126,8 +130,8 @@ def with_retry(
                         delay = min(base_delay * (2 ** attempt), max_delay)
                         delay += delay * 0.1 * (time.time() % 1)  # Add jitter
                         
-                        print(f"[RETRY] Attempt {attempt + 1}/{max_attempts} failed: {e}")
-                        print(f"[RETRY] Waiting {delay:.1f}s before retry...")
+                        logger.info("[RETRY] Attempt %d/%d failed: %s", attempt + 1, max_attempts, e)
+                        logger.info("[RETRY] Waiting %.1fs before retry...", delay)
                         time.sleep(delay)
             
             raise OrderRetryableError(f"Failed after {max_attempts} attempts: {last_error}")
@@ -170,7 +174,7 @@ def with_retry_async(
                     
                     if attempt < max_attempts - 1:
                         delay = min(base_delay * (2 ** attempt), max_delay)
-                        print(f"[RETRY] Attempt {attempt + 1}/{max_attempts} failed: {e}")
+                        logger.info("[RETRY] Attempt %d/%d failed: %s", attempt + 1, max_attempts, e)
                         await asyncio.sleep(delay)
             
             raise OrderRetryableError(f"Failed after {max_attempts} attempts: {last_error}")
@@ -254,9 +258,9 @@ def parse_order_response(order, expected_qty: float = 0, expected_quote: float =
             if market_price > 0:
                 estimated_price = market_price
                 estimated_qty = expected_quote / market_price
-                print(f"[ORDER] ⚠️ Order {order_id} succeeded but no fill data - using market price ${market_price:.4f}")
+                logger.warning("[ORDER] Order %s succeeded but no fill data - using market price $%.4f", order_id, market_price)
             else:
-                print(f"[ORDER] ❌ Order {order_id} succeeded but no fill data AND no market price - SKIPPING")
+                logger.error("[ORDER] Order %s succeeded but no fill data AND no market price - SKIPPING", order_id)
                 return OrderResult(success=False, error="No fill data and no market price")
         
         return OrderResult(

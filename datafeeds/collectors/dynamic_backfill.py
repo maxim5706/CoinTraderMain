@@ -130,7 +130,7 @@ class DynamicBackfill:
         """Background worker that processes backfill queue."""
         while self._running:
             try:
-                await asyncio.sleep(1)  # Check every second
+                await asyncio.sleep(2)  # Check every 2 seconds (reduced frequency)
                 
                 if not self._running:
                     break
@@ -162,21 +162,17 @@ class DynamicBackfill:
             candles_1m = await asyncio.to_thread(
                 self.fetch_candles, symbol, 60, 60
             )
+            await asyncio.sleep(0.5)  # Small delay between fetches
             
-            # Fetch 5m candles (120 min lookback)
+            # Fetch 5m candles (60 min lookback - reduced from 120)
             candles_5m = await asyncio.to_thread(
-                self.fetch_candles, symbol, 300, 120
+                self.fetch_candles, symbol, 300, 60
             )
             
-            # Fetch 1H candles (48 hour lookback = 48 candles)
-            candles_1h = await asyncio.to_thread(
-                self.fetch_candles, symbol, 3600, 48 * 60
-            )
-            
-            # Fetch 1D candles (30 day lookback)
-            candles_1d = await asyncio.to_thread(
-                self.fetch_candles, symbol, 86400, 30 * 24 * 60
-            )
+            # Skip higher timeframe candles to reduce API load
+            # These are nice-to-have but not critical for trading
+            candles_1h = []
+            candles_1d = []
             
             job.candles_1m = len(candles_1m) if candles_1m else 0
             job.candles_5m = len(candles_5m) if candles_5m else 0

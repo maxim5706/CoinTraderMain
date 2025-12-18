@@ -11,18 +11,16 @@ All strategies share the same gate funnel. The orchestrator:
 from typing import Optional, List, Dict
 from dataclasses import dataclass
 
+from core.logging_utils import get_logger
 from .base import BaseStrategy, StrategySignal
+
+logger = get_logger(__name__)
 from .burst_flag import BurstFlagStrategy
 from .vwap_reclaim import VWAPReclaimStrategy
-from .mean_reversion import MeanReversionStrategy
 from .daily_momentum import DailyMomentumStrategy
 from .range_breakout import RangeBreakoutStrategy
 from .relative_strength import RelativeStrengthStrategy
 from .support_bounce import SupportBounceStrategy
-from .gap_fill import GapFillStrategy
-from .breakout_retest import BreakoutRetestStrategy
-from .correlation_play import CorrelationPlayStrategy
-from .liquidity_sweep import LiquiditySweepStrategy
 from .momentum_1h import Momentum1HStrategy
 from .rsi_momentum import RSIMomentumStrategy
 from .bb_expansion import BBExpansionStrategy
@@ -33,15 +31,10 @@ class OrchestratorConfig:
     """Configuration for which strategies are enabled."""
     enable_burst_flag: bool = True
     enable_vwap_reclaim: bool = True
-    enable_mean_reversion: bool = False  # DISABLED - 0% win rate, losing -$16.91
     enable_daily_momentum: bool = True   # Catches multi-day trends like SUI
     enable_range_breakout: bool = True   # Consolidation breakouts
     enable_relative_strength: bool = True # Outperformers vs BTC
     enable_support_bounce: bool = True    # Key level bounces
-    enable_gap_fill: bool = False         # SAFE MODE: Test later (currently untested)
-    enable_breakout_retest: bool = False  # SAFE MODE: Test later (currently untested)
-    enable_correlation_play: bool = False # SAFE MODE: Test later (currently untested)
-    enable_liquidity_sweep: bool = False  # SAFE MODE: Test later (currently untested)
     enable_momentum_1h: bool = True       # MOMENTUM SUITE: Pure 1H momentum catcher
     enable_rsi_momentum: bool = True      # MOMENTUM SUITE: RSI reset plays
     enable_bb_expansion: bool = True      # MOMENTUM SUITE: Bollinger expansion
@@ -71,8 +64,6 @@ class StrategyOrchestrator:
             self.strategies.append(BurstFlagStrategy())
         if self.config.enable_vwap_reclaim:
             self.strategies.append(VWAPReclaimStrategy())
-        if self.config.enable_mean_reversion:
-            self.strategies.append(MeanReversionStrategy())
         if self.config.enable_daily_momentum:
             self.strategies.append(DailyMomentumStrategy())
         if self.config.enable_range_breakout:
@@ -81,14 +72,6 @@ class StrategyOrchestrator:
             self.strategies.append(RelativeStrengthStrategy())
         if self.config.enable_support_bounce:
             self.strategies.append(SupportBounceStrategy())
-        if self.config.enable_gap_fill:
-            self.strategies.append(GapFillStrategy())
-        if self.config.enable_breakout_retest:
-            self.strategies.append(BreakoutRetestStrategy())
-        if self.config.enable_correlation_play:
-            self.strategies.append(CorrelationPlayStrategy())
-        if self.config.enable_liquidity_sweep:
-            self.strategies.append(LiquiditySweepStrategy())
         if self.config.enable_momentum_1h:
             self.strategies.append(Momentum1HStrategy())
         if self.config.enable_rsi_momentum:
@@ -132,7 +115,7 @@ class StrategyOrchestrator:
                     self._signal_counts[sid] = self._signal_counts.get(sid, 0) + 1
                     
             except Exception as e:
-                print(f"[ORCH] {strategy.strategy_id} error on {symbol}: {e}")
+                logger.warning("[ORCH] %s error on %s: %s", strategy.strategy_id, symbol, e)
         
         if not candidates:
             return None
@@ -143,6 +126,15 @@ class StrategyOrchestrator:
         
         # Select highest edge_score_base
         best = max(candidates, key=lambda s: s.edge_score_base)
+        
+        # Validate the winning signal has proper risk parameters
+        is_valid, validation_msg = best.validate()
+        if not is_valid:
+            logger.warning(
+                "[ORCH] %s signal for %s failed validation: %s",
+                best.strategy_id, symbol, validation_msg
+            )
+            # Still return it but log the issue - let order_router gates catch it
         
         # Apply confluence boost or solo penalty
         if has_confluence:

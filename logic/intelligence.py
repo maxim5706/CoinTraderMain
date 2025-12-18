@@ -15,6 +15,9 @@ import numpy as np
 
 from core.config import settings
 from core.models import Signal, SignalType
+from core.logging_utils import get_logger
+
+logger = get_logger(__name__)
 
 # Canonical gate ordering for entry decisions. Tests lock this to prevent regressions.
 CANONICAL_GATE_ORDER = [
@@ -160,7 +163,7 @@ class PositionLimits:
     max_per_symbol: float = 10.0      # Max USD per symbol ($5 × 2 entries max)
     max_per_sector: int = 4           # Max 4 per sector (allow L1 stacking)
     max_per_corr_group: int = 2       # Max 2 in any correlation group
-    max_total_positions: int = 10     # Max active plays (not time-based!)
+    max_total_positions: int = 50     # Unlimited effectively - let budget be the limit
     max_weak_plays: int = 5           # Max weak plays before pausing new entries
     global_cooldown_sec: int = 30     # Reduced: 30s between trades (play quality matters more)
     symbol_cooldown_sec: int = 300    # 5 min per symbol (prevent same-symbol spam)
@@ -270,7 +273,7 @@ class IntelligenceLayer:
             
             return False
         except Exception as e:
-            print(f"[INTEL] Failed to fetch BTC trend: {e}")
+            logger.warning("[INTEL] Failed to fetch BTC trend: %s", e)
             return False
     
     @property
@@ -389,7 +392,7 @@ class IntelligenceLayer:
                 from logic.live_features import live_scorer
                 self.live_ml[symbol] = live_scorer.score_from_indicators(indicators)
             except Exception as e:
-                print(f"[ML] Error scoring {symbol}: {e}")
+                logger.warning("[ML] Error scoring %s: %s", symbol, e)
     
     def get_live_ml(self, symbol: str, max_stale_seconds: float = 180):
         """

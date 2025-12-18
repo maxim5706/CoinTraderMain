@@ -42,15 +42,16 @@ from core.state import (
     BotState, BurstCandidate, FocusCoinState, 
     CurrentSignal, PositionDisplay
 )
+from core.helpers import safe_features, make_signal_event, run_preflight
 
 from datafeeds.collectors import CandleCollector, DynamicBackfill, MockCollector, RestPoller
 from datafeeds.coinbase_fetcher import fetch_history_windowed
 from datafeeds.universe import SymbolScanner, tier_scheduler
-from services.candle_store import candle_store
+from core.candle_store import candle_store
 from logic.strategies.orchestrator import StrategyOrchestrator
 from execution.order_router import OrderRouter
-from apps.dashboard.dashboard_v2 import DashboardV2
-from tools.preflight import test_api_keys
+from ui.dashboard_v2 import DashboardV2
+from core.helpers.preflight import test_api_keys
 
 
 class TradingBotV2:
@@ -81,6 +82,14 @@ class TradingBotV2:
         self._focus_symbol: Optional[str] = None
         self._last_history_probe: Optional[datetime] = None
         self._strategy_pool = 50  # Analyze top 50 symbols each loop (gaming PC can handle it)
+        
+        # SIGNAL TRACKING (4 different purposes - all needed!):
+        # 1. _last_strategy_signals: dict[symbol, StrategySignal] - Current active signals for re-evaluation
+        # 2. _recent_signal_symbols: dict[symbol, datetime] - For scanner display (60s window)
+        # 3. state.live_log: deque - For TUI "Recent Events" panel (100 events)
+        # 4. signal_logger: JSONL files - For ML training (permanent storage)
+        self._last_strategy_signals: dict[str, any] = {}  # Active signals
+        self._recent_signal_symbols: dict[str, datetime] = {}  # For scanner display
         
         # Task handles
         self._clock_a_task: Optional[asyncio.Task] = None  # WebSocket
@@ -203,6 +212,9 @@ class TradingBotV2:
         
         # Print startup summary
         self._print_startup_summary(stream_symbols)
+
+        # Run preflight checks (informational)
+        self._run_preflight_checks()
         
         # Start all clocks
         self._clock_a_task = asyncio.create_task(self.collector.start())  # WebSocket
@@ -519,6 +531,19 @@ class TradingBotV2:
             self.scanner.refresh_spread_snapshots(candidates)
             self._last_rest_probe = now
             self.state.log(f"REST probe {len(candidates)} symbols", "UNIV")
+            
+            # Log probes to monitor
+            from ui.probe_monitor import probe_monitor
+            for symbol in candidates:
+                info = self.scanner.universe.get(symbol)
+                if info:
+                    probe_monitor.add_probe(
+                        symbol=symbol,
+                        price=info.price,
+                        spread_bps=getattr(info, 'avg_spread_bps', 0) or getattr(info, 'spread_bps', 0),
+                        vol_spike=1.0,  # Default, could add actual vol spike
+                        trend_1m=0.0
+                    )
         except Exception as e:
             logger.warning("[REST] Probe error: %s", e, exc_info=True)
     
@@ -557,10 +582,30 @@ class TradingBotV2:
                 vwap=buf.vwap(30),
                 atr_24h=0.0
             )
+            # Track probe for dashboard visibility
+            try:
+                from ui.probe_monitor import probe_monitor
+                info = self.scanner.universe.get(sym)
+                bm = self.scanner.burst_metrics.get(sym)
+                price = buf.last_price or (bm.price if bm else 0.0)
+                spread = info.spread_bps if info else 0.0
+                vol_spike = bm.vol_spike if bm else 1.0
+                trend_1m = bm.trend_15m if bm else 0.0
+                probe_monitor.add_probe(
+                    symbol=sym,
+                    price=price,
+                    spread_bps=spread,
+                    vol_spike=vol_spike,
+                    trend_1m=trend_1m,
+                )
+            except Exception:
+                logger.debug("[PROBE] Failed to add probe for %s", sym, exc_info=True)
         self._last_history_probe = now
     
-    def _backfill_initial(self, symbols: list[str], minutes_1m: int = 60, minutes_5m: int = 120):
+    def _backfill_initial(self, symbols: list[str], minutes_1m: int = 60, minutes_5m: int = 60):
         """Pull recent history via REST and seed candle buffers to avoid warmup lag."""
+        import time as _time
+        
         if not self.collector:
             return
         
@@ -571,52 +616,69 @@ class TradingBotV2:
         
         total_1m = 0
         total_5m = 0
-        total_1h = 0
-        total_1d = 0
         success_count = 0
         
-        # Process symbols with progress tracking
-        num_symbols = len(symbols)
-        for idx, sym in enumerate(symbols):
+        # LIMIT symbols to avoid rate limits - prioritize hot/important symbols
+        # Only backfill top 10 symbols, rest will warm up via WebSocket
+        symbols_to_backfill = symbols[:10]
+        num_symbols = len(symbols_to_backfill)
+        
+        logger.info("[BACKFILL] Starting initial backfill for %d symbols (limited from %d)", num_symbols, len(symbols))
+        
+        # Test if we're rate limited before starting
+        try:
+            test_sym = symbols_to_backfill[0] if symbols_to_backfill else "BTC-USD"
+            logger.info("[BACKFILL] Testing API availability...")
+            _time.sleep(2)  # Brief pause
+            test_candles = self.scanner.fetch_history(test_sym, granularity_s=60, lookback_minutes=5)
+            if not test_candles:
+                logger.warning("[BACKFILL] API test returned no data, skipping backfill - will warm up via WebSocket")
+                return
+            logger.info("[BACKFILL] API OK, proceeding with backfill...")
+        except Exception as e:
+            if "429" in str(e):
+                logger.warning("[BACKFILL] API rate limited, skipping backfill - will warm up via WebSocket")
+                return
+            logger.warning("[BACKFILL] API test failed: %s - skipping backfill", e)
+            return
+        
+        # Process symbols with progress tracking and rate limiting
+        for idx, sym in enumerate(symbols_to_backfill):
             buffer = self.collector.get_buffer(sym)
             if buffer is None:
                 continue
             
-            # Fetch 1m candles (most important for live trading)
-            history_1m = self.scanner.fetch_history(sym, granularity_s=60, lookback_minutes=minutes_1m)
-            for candle in history_1m:
-                buffer.add_1m(candle)
-                total_1m += 1
-            
-            # Fetch 5m candles directly (faster than aggregating from 1m)
-            history_5m = self.scanner.fetch_history(sym, granularity_s=300, lookback_minutes=minutes_5m)
-            for candle in history_5m:
-                buffer.add_5m_direct(candle)
-                total_5m += 1
-            
-            # Fetch 1H candles (48 hours = 2880 minutes)
-            history_1h = self.scanner.fetch_history(sym, granularity_s=3600, lookback_minutes=48*60)
-            if history_1h:
-                buffer.candles_1h = history_1h[-48:]  # Keep last 48 hours
-                total_1h += len(history_1h)
-                # Store to disk
-                candle_store.write_candles(sym, history_1h, "1h", source="backfill")
-            
-            # Fetch 1D candles (30 days = 43200 minutes)
-            history_1d = self.scanner.fetch_history(sym, granularity_s=86400, lookback_minutes=30*24*60)
-            if history_1d:
-                buffer.candles_1d = history_1d[-30:]  # Keep last 30 days
-                total_1d += len(history_1d)
-                # Store to disk
-                candle_store.write_candles(sym, history_1d, "1d", source="backfill")
-            
-            # Update feature engine with higher TF data
-            if history_1h or history_1d:
-                from logic.live_features import feature_engine
-                feature_engine.update_higher_tf(sym, history_1h or [], history_1d or [])
-            
-            if history_1m or history_5m:
-                success_count += 1
+            try:
+                # Fetch 1m candles (most important for live trading)
+                history_1m = self.scanner.fetch_history(sym, granularity_s=60, lookback_minutes=minutes_1m)
+                for candle in history_1m:
+                    buffer.add_1m(candle)
+                    total_1m += 1
+                
+                # Rate limit pause between API calls
+                _time.sleep(1.0)  # Increased to 1s
+                
+                # Fetch 5m candles directly (faster than aggregating from 1m)
+                history_5m = self.scanner.fetch_history(sym, granularity_s=300, lookback_minutes=minutes_5m)
+                for candle in history_5m:
+                    buffer.add_5m_direct(candle)
+                    total_5m += 1
+                
+                # Skip 1H and 1D candles on startup to reduce API load
+                # These will be fetched by DynamicBackfill later if needed
+                
+                if history_1m or history_5m:
+                    success_count += 1
+                
+                # Rate limit pause between symbols
+                _time.sleep(2.0)  # 2s between symbols = very conservative
+                
+            except Exception as e:
+                if "429" in str(e):
+                    logger.warning("[BACKFILL] Rate limited at symbol %d, pausing...", idx)
+                    _time.sleep(5)  # Long pause on rate limit
+                else:
+                    logger.debug("[BACKFILL] Error on %s: %s", sym, e)
             
             # Progress indicator every 10 symbols
             if (idx + 1) % 10 == 0:
@@ -628,18 +690,16 @@ class TradingBotV2:
         
         if total_1m > 0 or total_5m > 0:
             logger.info(
-                "[BACKFILL] Loaded %s 1m + %s 5m + %s 1h + %s 1d candles for %s/%s symbols",
+                "[BACKFILL] Loaded %s 1m + %s 5m candles for %s/%s symbols",
                 total_1m,
                 total_5m,
-                total_1h,
-                total_1d,
                 success_count,
-                len(symbols),
+                num_symbols,
             )
-            self.state.log(f"Backfill: {total_1m} 1m, {total_5m} 5m, {total_1h} 1h, {total_1d} 1d candles", "DATA")
+            self.state.log(f"Backfill: {total_1m} 1m, {total_5m} 5m candles", "DATA")
             
-            # Mark symbols as warm in tier scheduler
-            for sym in symbols:
+            # Mark backfilled symbols as warm in tier scheduler
+            for sym in symbols_to_backfill:
                 buffer = self.collector.get_buffer(sym) if self.collector else None
                 if buffer:
                     tier_scheduler.update_candle_counts(
@@ -781,11 +841,9 @@ class TradingBotV2:
             feature_engine.update_higher_tf(symbol, candles_1h or [], candles_1d or [])
         
         # Update tier scheduler
-        tier_scheduler.update_candle_counts(
-            symbol,
-            len(candles_1m),
-            len(candles_5m)
-        )
+        count_1m = len(buffer.candles_1m) if buffer else len(candles_1m)
+        count_5m = len(buffer.candles_5m) if buffer else len(candles_5m)
+        tier_scheduler.update_candle_counts(symbol, count_1m, count_5m)
     
     def _select_focus_symbol(self) -> Optional[str]:
         """Rotate focus across top hot-list symbols when not in a trade."""
@@ -874,7 +932,17 @@ class TradingBotV2:
                     self.state.candles_last_5s = 0
                     self.state.events_last_5s = 0
                     last_counter_reset = datetime.now(timezone.utc)
-                
+
+                # Surface warm/cold status for dashboard and logging
+                tier_stats = tier_scheduler.get_stats()
+                self.state.tier1_count = tier_stats.get("tier1_ws", 0)
+                self.state.tier2_count = tier_stats.get("tier2_fast", 0)
+                self.state.tier3_count = tier_stats.get("tier3_slow", 0)
+                self.state.warm_symbols = tier_stats.get("warm", 0)
+                self.state.cold_symbols = tier_stats.get("cold", 0)
+                if self.backfill_service:
+                    self.state.pending_backfills = self.backfill_service.get_pending_count()
+
                 # Update BTC regime every 2 minutes
                 if (datetime.now(timezone.utc) - last_btc_check).total_seconds() >= 120:
                     intelligence.fetch_btc_trend()
@@ -922,7 +990,7 @@ class TradingBotV2:
                 self._probe_unstreamed_history(limit=3, lookback_minutes=30)
                 
                 # Compute hot list (side-effect updates scanner.hot_list)
-                self.scanner.compute_hot_list(top_n=10)
+                self.scanner.compute_hot_list(top_n=20)  # Increased from 10 to 20
                 self._log_hot_leader_change()
                 
                 # REST probe more non-streamed symbols to improve spreads/eligibility (gaming PC)
@@ -963,7 +1031,7 @@ class TradingBotV2:
                     self._last_pnl_log = datetime.now(timezone.utc)
                 if not hasattr(self, '_last_status_write'):
                     self._last_status_write = datetime.now(timezone.utc)
-                if (datetime.now(timezone.utc) - self._last_portfolio_refresh).total_seconds() >= 15:
+                if (datetime.now(timezone.utc) - self._last_portfolio_refresh).total_seconds() >= 60:  # Reduced from 15s to avoid rate limits
                     if self.mode == TradingMode.LIVE and settings.is_configured:
                         from core.portfolio import portfolio_tracker
                         from core.logger import log_pnl_snapshot, utc_iso_str as pnl_utc_iso_str
@@ -1030,6 +1098,8 @@ class TradingBotV2:
                 if hasattr(self.collector, 'is_receiving'):
                     self.state.ws_ok = self.collector.is_receiving
                     self.state.ws_last_age = self.collector.last_message_age
+                    if hasattr(self.collector, 'total_reconnects'):
+                        self.state.ws_reconnect_count = self.collector.total_reconnects
                 elif hasattr(self.collector, 'is_connected'):
                     self.state.ws_ok = self.collector.is_connected
                 
@@ -1080,97 +1150,23 @@ class TradingBotV2:
             self.state.burst_leaderboard = candidates[:10]
     
     def _update_burst_leaderboard(self):
-        """Update dashboard burst leaderboard from scanner."""
-        from logic.intelligence import intelligence
+        """Update dashboard burst leaderboard using ScannerManager."""
+        if not hasattr(self, '_scanner_manager'):
+            from datafeeds.scanner_manager import ScannerManager
+            self._scanner_manager = ScannerManager(
+                state=self.state,
+                scanner=self.scanner,
+                get_price_func=self._get_price
+            )
         
-        candidates = []
+        # Clean up old signal symbols (>60 seconds old)
+        now = datetime.now(timezone.utc)
+        expired = [sym for sym, ts in self._recent_signal_symbols.items() if (now - ts).total_seconds() > 60]
+        for sym in expired:
+            del self._recent_signal_symbols[sym]
         
-        for m in self.scanner.hot_list.symbols:
-            info = self.scanner.universe.get(m.symbol)
-            
-            # Get entry score - quick estimate from burst metrics
-            entry_score = 40  # Base score
-            try:
-                # Price bonus (low price = more volatile)
-                if m.price < 0.10:
-                    entry_score += 15
-                elif m.price < 1.0:
-                    entry_score += 10
-                elif m.price < 10.0:
-                    entry_score += 5
-                
-                # Trend bonus
-                if m.trend_15m > 1.0:
-                    entry_score += 15
-                elif m.trend_15m > 0.5:
-                    entry_score += 10
-                elif m.trend_15m > 0:
-                    entry_score += 5
-                
-                # Volume spike bonus
-                if m.vol_spike > 10:
-                    entry_score += 15
-                elif m.vol_spike > 5:
-                    entry_score += 10
-                elif m.vol_spike > 2:
-                    entry_score += 5
-                
-                # Tier bonus
-                tier_name = info.tier if info else "unknown"
-                if tier_name == "micro":
-                    entry_score += 15
-                elif tier_name == "small":
-                    entry_score += 10
-            except Exception as e:
-                logger.warning("[RADAR] Failed to score burst candidate %s: %s", m.symbol, e, exc_info=True)
-            
-            candidates.append(BurstCandidate(
-                symbol=m.symbol,
-                price=m.price,
-                burst_score=m.burst_score,
-                vol_spike=m.vol_spike,
-                range_spike=m.range_spike,
-                trend_5m=m.trend_15m,
-                trend_slope=m.trend_slope,
-                vwap_dist=m.vwap_distance,
-                daily_move=m.daily_move,
-                tier=info.tier if info else "unknown",
-                rank=m.rank,
-                entry_score=entry_score
-            ))
-        
-        # If hot_list is small, supplement with warm symbols from candle_store
-        if len(candidates) < 8:
-            try:
-                from services.candle_store import candle_store
-                # Get warm symbols that aren't already in candidates
-                existing = {c.symbol for c in candidates}
-                warm_symbols = [s for s in candle_store.list_symbols() if s not in existing]
-                
-                for symbol in warm_symbols[:12 - len(candidates)]:
-                    info = self.scanner.universe.get(symbol)
-                    price = self._get_price(symbol)
-                    if price and price > 0:
-                        candidates.append(BurstCandidate(
-                            symbol=symbol,
-                            price=price,
-                            burst_score=0,
-                            vol_spike=1.0,  # Default
-                            range_spike=0,
-                            trend_5m=0,
-                            trend_slope=0,
-                            vwap_dist=0,
-                            daily_move=0,
-                            tier=info.tier if info else "unknown",
-                            rank=len(candidates) + 1,
-                            entry_score=45  # Warm but not hot
-                        ))
-            except Exception:
-                pass
-        
-        # Update leaderboard
-        if candidates:
-            self.state.burst_leaderboard = candidates[:15]
+        # Pass recent signal symbols to scanner manager
+        self._scanner_manager.update_leaderboard(recent_signal_symbols=list(self._recent_signal_symbols.keys()))
 
     def _write_status_snapshot(self):
         """Write lightweight BotState snapshot for external health checks."""
@@ -1312,11 +1308,42 @@ class TradingBotV2:
             
             self._last_strategy_signals[symbol] = strat_signal
             
+            # Track this symbol as recently signaling (for scanner display)
+            self._recent_signal_symbols[symbol] = datetime.now(timezone.utc)
+            
             # Log strategy signal to TUI
             sym_short = symbol.replace("-USD", "")
             score = int(strat_signal.edge_score_base)
             strat_name = strat_signal.strategy_id
             self.state.log(f"{sym_short} {strat_name} score={score}", "STRAT")
+            
+            # Track recent signals for TUI visibility
+            try:
+                spread = self._latest_spreads.get(symbol, 0.0)
+                evt = make_signal_event(
+                    datetime.now(timezone.utc),
+                    symbol,
+                    strat_name,
+                    score,
+                    spread,
+                    True,
+                    strat_signal.reason or "signal",
+                )
+                self.state.recent_signals.appendleft(evt)
+            except Exception:
+                pass
+            
+            # Log to JSONL for ML training
+            try:
+                from core.signal_logger import signal_logger
+                signal_logger.log_signal(
+                    signal=strat_signal,
+                    features=features,
+                    taken=True,  # Will be opened if it passes gates
+                    rejection_reason=None
+                )
+            except Exception as e:
+                logger.debug(f"Signal logging error: {e}")
             
             # Log signal to file (Layer D)
             signal_record = {
@@ -1420,6 +1447,7 @@ class TradingBotV2:
             "vol_ratio": 1.0,
             "vwap_pct": 0.0,
             "vwap_distance": 0.0,
+            "spread_bps": self._latest_spreads.get(symbol, 0.0),
         }
         
         if ind and getattr(ind, "is_ready", False):
@@ -1441,7 +1469,7 @@ class TradingBotV2:
             except Exception:
                 logger.debug("VWAP fallback failed for %s", symbol, exc_info=True)
         
-        return features
+        return safe_features(features)
     
     def _build_market_context(self) -> dict:
         """Build market context shared across strategies."""
@@ -1571,6 +1599,30 @@ class TradingBotV2:
         sig.tp2_price = 0
         sig.confidence = 0
         sig.reason = reason
+
+    def _run_preflight_checks(self, preflight_only: bool = False):
+        """Run lightweight preflight and log results."""
+        try:
+            # Minimal REST ping to validate reachability (public endpoint)
+            def _rest_ping():
+                from coinbase.rest import RESTClient
+                client = RESTClient()
+                client.get_public_candles(product_id="BTC-USD", granularity="ONE_MINUTE", start=None, end=None)
+
+            results = run_preflight(self.state, self.collector, self.router, rest_ping_func=_rest_ping)
+            ok = results.get("api_ok", False) and results.get("ws_ok", False) and results.get("sync_fresh", False) \
+                and results.get("logs_writable", False) and results.get("data_writable", False)
+            msg = " / ".join([f"{k}={v}" for k, v in results.items()])
+            if ok:
+                logger.info("[PREFLIGHT] %s", msg)
+                self.state.log(f"Preflight OK: {msg}", "UNIV")
+            else:
+                logger.warning("[PREFLIGHT] Issues: %s", msg)
+                self.state.log(f"Preflight WARN: {msg}", "WARN")
+            if preflight_only:
+                print(msg)
+        except Exception:
+            logger.debug("[PREFLIGHT] Failed to run checks", exc_info=True)
     
     def _update_signal_state(self, signal):
         """Update current signal state from strategy signal."""
@@ -1752,8 +1804,10 @@ class TradingBotV2:
             poller_stats = self.rest_poller.get_stats()
             self.state.rest_polls_tier2 = poller_stats.get("polls_tier2", 0)
             self.state.rest_polls_tier3 = poller_stats.get("polls_tier3", 0)
+            self.state.rest_requests = poller_stats.get("requests", 0)
+            self.state.rest_429s = poller_stats.get("total_429s", 0)
             self.state.rest_rate_degraded = poller_stats.get("is_degraded", False)
-        
+
         # BTC regime from intelligence
         from logic.intelligence import intelligence
         self.state.btc_regime = intelligence._market_regime
@@ -1797,7 +1851,7 @@ class TradingBotV2:
         try:
             # Try new Textual TUI first
             try:
-                from apps.dashboard.tui_live import run_tui_async
+                from ui.tui_live import run_tui_async
                 await run_tui_async(self.state)
             except ImportError:
                 # Fallback to old Rich dashboard
@@ -1844,6 +1898,8 @@ Examples:
                        help='Shortcut for --mode=live')
     parser.add_argument('--validate', action='store_true',
                        help='Run validation checks before starting')
+    parser.add_argument('--preflight-only', action='store_true',
+                       help='Run preflight checks and exit without starting the bot')
     
     args = parser.parse_args()
     
@@ -1877,6 +1933,14 @@ Examples:
     
     print(f"🎯 Trading Mode: {settings.trading_mode}")
     print(f"🔑 API Keys: {'Configured' if settings.coinbase_api_key else 'Missing'}")
+
+    # Preflight-only mode
+    if args.preflight_only:
+        bot = TradingBotV2()
+        # Update API status for preflight helper
+        bot.state.api_ok, bot.state.api_msg = test_api_keys()
+        bot._run_preflight_checks(preflight_only=True)
+        return
     
     # Run validation if requested
     if args.validate:

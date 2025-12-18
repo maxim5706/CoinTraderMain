@@ -6,7 +6,7 @@ import time
 from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -33,13 +33,13 @@ class Settings(BaseSettings):
     paper_start_balance_usd: float = Field(default=1000.0, alias="PAPER_START_BALANCE")
     
     # Risk - Exposure-based (no hard position count limit)
-    portfolio_max_exposure_pct: float = 0.70  # 70% max in positions
+    portfolio_max_exposure_pct: float = 0.80  # 80% max in positions (was 70%)
     position_base_pct: float = 0.03           # 3% base size per trade
     position_min_pct: float = 0.02            # 2% minimum
     position_max_pct: float = 0.08            # 8% maximum (was 6%)
     max_trade_usd: float = Field(default=15.0, alias="MAX_TRADE_USD")  # Default $15
     daily_max_loss_usd: float = Field(default=25.0, alias="DAILY_MAX_LOSS_USD")
-    max_positions: int = 10                   # Focus on fewer, bigger positions
+    max_positions: int = 50                   # No artificial limit - budget is the limit
     
     # Tiered sizing - BEAST MODE with learning positions
     whale_trade_usd: float = 30.0             # A+ setups (85+ score, confluence)
@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     strong_trade_usd: float = 15.0            # A setups (70-84 score)
     strong_score_min: int = 70                # Min score for strong
     normal_trade_usd: float = 10.0            # B setups (55-69 score)
-    scout_trade_usd: float = 5.0              # C setups - LEARNING positions (45-54 score)
-    scout_score_min: int = 45                 # Min score for scout (experimental)
+    scout_trade_usd: float = 5.0              # C setups - LEARNING positions (40-54 score)
+    scout_score_min: int = 40                 # Min score for scout (was 45)
     whale_max_positions: int = 2              # Max whale bets at once
     strong_max_positions: int = 4             # Max strong bets
     scout_max_positions: int = 6              # Max scout positions (learning)
@@ -115,8 +115,8 @@ class Settings(BaseSettings):
     ml_boost_scale: float = 10.0
     ml_boost_min: float = -5.0
     ml_boost_max: float = 10.0
-    base_score_strict_cutoff: float = 45
-    entry_score_min: float = 45  # BEAST MODE - allow scout positions
+    base_score_strict_cutoff: float = 40
+    entry_score_min: float = 40  # BEAST MODE - lowered from 45
     
     # Thesis invalidation - tighter to prevent big losses
     thesis_trend_flip_5m: float = -0.3  # Tighter from -0.5
@@ -147,6 +147,80 @@ class Settings(BaseSettings):
     # Ignored symbols (delisted, problematic, or dust to skip)
     ignored_symbols: str = "SNX-USD,CLV-USD,CGLD-USD,MANA-USD,NU-USD,BOND-USD"
     
+    @field_validator('portfolio_max_exposure_pct', 'position_base_pct', 'position_min_pct', 
+                      'position_max_pct', 'taker_fee_pct', 'maker_fee_pct', 'tp1_partial_pct',
+                      'trail_lock_pct', mode='after')
+    @classmethod
+    def validate_percentage_0_1(cls, v: float) -> float:
+        """Validate percentages that should be between 0 and 1."""
+        if not 0 <= v <= 1:
+            raise ValueError(f'Percentage must be between 0 and 1, got {v}')
+        return v
+    
+    @field_validator('fixed_stop_pct', 'tp1_pct', 'tp2_pct', 'trail_be_trigger_pct', 
+                      'trail_start_pct', 'limit_buffer_pct', mode='after')
+    @classmethod
+    def validate_percentage_positive(cls, v: float) -> float:
+        """Validate percentages that should be positive."""
+        if v <= 0:
+            raise ValueError(f'Percentage must be positive, got {v}')
+        return v
+    
+    @field_validator('max_trade_usd', 'daily_max_loss_usd', 'min_24h_volume_usd', mode='after')
+    @classmethod
+    def validate_usd_positive(cls, v: float) -> float:
+        """Validate USD amounts that should be positive."""
+        if v <= 0:
+            raise ValueError(f'USD amount must be positive, got {v}')
+        return v
+    
+    @field_validator('max_positions', 'max_hold_minutes', 'order_cooldown_seconds', mode='after')
+    @classmethod
+    def validate_int_positive(cls, v: int) -> int:
+        """Validate integers that should be positive."""
+        if v <= 0:
+            raise ValueError(f'Value must be positive, got {v}')
+        return v
+    
+    @field_validator('min_rr_ratio', mode='after')
+    @classmethod  
+    def validate_rr_ratio(cls, v: float) -> float:
+        """Validate R:R ratio is reasonable."""
+        if v < 1.0:
+            raise ValueError(f'R:R ratio must be >= 1.0, got {v}')
+        if v > 10.0:
+            logger.warning('R:R ratio %.1f is very high, may miss trades', v)
+        return v
+    
+    @model_validator(mode='after')
+    def validate_rr_achievable(self) -> 'Settings':
+        """Validate that TP1 can achieve the minimum R:R ratio."""
+        if self.fixed_stop_pct > 0:
+            actual_rr = self.tp1_pct / self.fixed_stop_pct
+            if actual_rr < self.min_rr_ratio:
+                logger.warning(
+                    'TP1 (%.1f%%) / Stop (%.1f%%) = %.2f R:R, below min_rr_ratio %.2f',
+                    self.tp1_pct * 100, self.fixed_stop_pct * 100, actual_rr, self.min_rr_ratio
+                )
+        return self
+    
+    @model_validator(mode='after')
+    def validate_position_sizing(self) -> 'Settings':
+        """Validate position sizing makes sense."""
+        if self.position_min_pct > self.position_max_pct:
+            raise ValueError(
+                f'position_min_pct ({self.position_min_pct}) > position_max_pct ({self.position_max_pct})'
+            )
+        if self.position_base_pct < self.position_min_pct:
+            raise ValueError(
+                f'position_base_pct ({self.position_base_pct}) < position_min_pct ({self.position_min_pct})'
+            )
+        if self.position_base_pct > self.position_max_pct:
+            raise ValueError(
+                f'position_base_pct ({self.position_base_pct}) > position_max_pct ({self.position_max_pct})'
+            )
+        return self
+
     @property
     def ignored_symbol_set(self) -> set[str]:
         return {s.strip() for s in self.ignored_symbols.split(",") if s.strip()}
@@ -161,7 +235,31 @@ class Settings(BaseSettings):
     
     @property
     def is_configured(self) -> bool:
+        """Check if API keys are present (not necessarily valid)."""
         return bool(self.coinbase_api_key and self.coinbase_api_secret)
+    
+    def validate_for_live_mode(self) -> tuple[bool, str]:
+        """Validate settings are safe for live trading. Returns (ok, message)."""
+        issues = []
+        
+        if not self.is_configured:
+            issues.append('API keys missing - set COINBASE_API_KEY and COINBASE_API_SECRET in .env')
+        
+        if self.daily_max_loss_usd > 100:
+            issues.append(f'daily_max_loss_usd=${self.daily_max_loss_usd} is high - are you sure?')
+        
+        if self.max_trade_usd > 50:
+            issues.append(f'max_trade_usd=${self.max_trade_usd} is high for live trading')
+        
+        if self.portfolio_max_exposure_pct > 0.80:
+            issues.append(f'portfolio_max_exposure_pct={self.portfolio_max_exposure_pct} leaves little cash buffer')
+        
+        if self.fixed_stop_pct > 0.10:
+            issues.append(f'fixed_stop_pct={self.fixed_stop_pct*100}% is very wide')
+        
+        if issues:
+            return False, '; '.join(issues)
+        return True, 'OK'
     
     def get_ws_jwt(self) -> str:
         if not HAS_JWT or not self.is_configured:

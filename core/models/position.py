@@ -3,7 +3,10 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class Side(Enum):
@@ -48,6 +51,54 @@ class Position:
     highest_price: float = 0.0      # Highest price seen since entry
     trailing_stop_pct: float = 0.0  # Trailing stop % (0 = disabled)
     trailing_active: bool = False   # Is trailing stop active?
+    
+    def __post_init__(self):
+        """Validate position data after creation."""
+        # Validate prices are positive
+        if self.entry_price <= 0:
+            raise ValueError(f'entry_price must be positive, got {self.entry_price}')
+        if self.stop_price < 0:
+            raise ValueError(f'stop_price cannot be negative, got {self.stop_price}')
+        if self.size_qty <= 0:
+            raise ValueError(f'size_qty must be positive, got {self.size_qty}')
+        
+        # Validate stop is on correct side of entry
+        if self.stop_price > 0:  # Only validate if stop is set
+            if self.side == Side.BUY and self.stop_price >= self.entry_price:
+                logger.warning(
+                    '[POSITION] %s: stop_price (%.4f) >= entry_price (%.4f) for LONG',
+                    self.symbol, self.stop_price, self.entry_price
+                )
+            elif self.side == Side.SELL and self.stop_price <= self.entry_price:
+                logger.warning(
+                    '[POSITION] %s: stop_price (%.4f) <= entry_price (%.4f) for SHORT',
+                    self.symbol, self.stop_price, self.entry_price
+                )
+        
+        # Validate TP1 is on correct side of entry
+        if self.tp1_price > 0:
+            if self.side == Side.BUY and self.tp1_price <= self.entry_price:
+                logger.warning(
+                    '[POSITION] %s: tp1_price (%.4f) <= entry_price (%.4f) for LONG',
+                    self.symbol, self.tp1_price, self.entry_price
+                )
+            elif self.side == Side.SELL and self.tp1_price >= self.entry_price:
+                logger.warning(
+                    '[POSITION] %s: tp1_price (%.4f) >= entry_price (%.4f) for SHORT',
+                    self.symbol, self.tp1_price, self.entry_price
+                )
+        
+        # Initialize entry_cost_usd if not set
+        if self.entry_cost_usd <= 0:
+            self.entry_cost_usd = self.entry_price * self.size_qty
+    
+    def __repr__(self) -> str:
+        pnl_pct = ((self.size_usd / self.cost_basis) - 1) * 100 if self.cost_basis > 0 else 0
+        return (
+            f"Position({self.symbol}, {self.side.value}, "
+            f"entry=${self.entry_price:.4f}, stop=${self.stop_price:.4f}, "
+            f"qty={self.size_qty:.6f}, pnl={pnl_pct:+.1f}%)"
+        )
     
     @property
     def confidence_trend(self) -> str:

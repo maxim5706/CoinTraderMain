@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CoinTrader Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        :root {
+            --bg-primary: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --border: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --green: #3fb950;
+            --red: #f85149;
+            --yellow: #d29922;
+            --blue: #58a6ff;
+        }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+        }
+        .tab-btn { 
+            padding: 8px 16px; 
+            border-bottom: 2px solid transparent;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+        }
+        .tab-btn:hover { color: var(--text-primary); }
+        .tab-btn.active { 
+            color: var(--text-primary); 
+            border-bottom-color: var(--blue);
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        table { width: 100%; border-collapse: collapse; }
+        th { 
+            text-align: left; 
+            padding: 8px 12px; 
+            color: var(--text-secondary);
+            font-weight: 500;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        td { 
+            padding: 8px 12px; 
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        tr:hover { background: var(--bg-tertiary); }
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .status-ok { background: var(--green); }
+        .status-warn { background: var(--yellow); }
+        .status-err { background: var(--red); }
+        .pnl-pos { color: var(--green); }
+        .pnl-neg { color: var(--red); }
+        .pnl-zero { color: var(--text-secondary); }
+        .mono { font-family: 'SF Mono', 'Consolas', monospace; }
+        .btn {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-weight: 500;
+            transition: all 0.15s;
+        }
+        .btn-danger { background: #da3633; color: white; }
+        .btn-danger:hover { background: #f85149; }
+        .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
+        .btn-secondary:hover { background: #30363d; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div class="max-w-7xl mx-auto px-4 py-4">
+        
+        <!-- Header -->
+        <header class="flex items-center justify-between mb-4 pb-4 border-b border-gray-700">
+            <div class="flex items-center gap-4">
+                <h1 class="text-lg font-semibold">CoinTrader Terminal</h1>
+                <span id="mode-badge" class="px-2 py-0.5 text-xs rounded bg-green-800 text-green-200">LIVE</span>
+                <span id="profile-badge" class="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-300">prod</span>
+            </div>
+            <div class="flex items-center gap-6 text-sm">
+                <div class="flex items-center gap-2">
+                    <span id="ws-dot" class="status-dot status-ok"></span>
+                    <span id="ws-status">Connected</span>
+                </div>
+                <div class="text-gray-500">
+                    <span id="last-update">--:--:--</span>
+                </div>
+                <button id="kill-btn" onclick="toggleKillSwitch()" class="btn btn-secondary">
+                    Kill Switch
+                </button>
+            </div>
+        </header>
+
+        <!-- Summary Bar -->
+        <div class="grid grid-cols-6 gap-4 mb-4">
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Portfolio</div>
+                <div id="portfolio-value" class="text-xl font-semibold">$0.00</div>
+            </div>
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Daily PnL</div>
+                <div id="daily-pnl" class="text-xl font-semibold">$0.00</div>
+            </div>
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Unrealized</div>
+                <div id="unrealized-pnl" class="text-xl font-semibold">$0.00</div>
+            </div>
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Win Rate</div>
+                <div id="win-rate" class="text-xl font-semibold">0%</div>
+            </div>
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Trades</div>
+                <div id="trades-count" class="text-xl font-semibold">0W / 0L</div>
+            </div>
+            <div class="card p-3">
+                <div class="text-xs text-gray-500 mb-1">Available</div>
+                <div id="available-budget" class="text-xl font-semibold">$0</div>
+            </div>
+        </div>
+
+        <!-- Status Bar -->
+        <div class="card p-3 mb-4 flex items-center gap-6 text-sm">
+            <div>
+                <span class="text-gray-500">BTC Regime:</span>
+                <span id="btc-regime" class="ml-1 font-medium">normal</span>
+            </div>
+            <div>
+                <span class="text-gray-500">Exposure:</span>
+                <span id="exposure-pct" class="ml-1 font-medium">0%</span>
+            </div>
+            <div>
+                <span class="text-gray-500">Positions:</span>
+                <span id="position-count" class="ml-1 font-medium">0</span>
+            </div>
+            <div>
+                <span class="text-gray-500">Warm:</span>
+                <span id="warm-count" class="ml-1 font-medium">0</span>
+            </div>
+            <div>
+                <span class="text-gray-500">Streaming:</span>
+                <span id="streaming-count" class="ml-1 font-medium">0</span>
+            </div>
+            <div class="ml-auto flex items-center gap-4">
+                <span class="text-gray-500">Heartbeats:</span>
+                <span id="hb-ws" class="status-dot status-err" title="WebSocket"></span>
+                <span id="hb-1m" class="status-dot status-err" title="1m Candles"></span>
+                <span id="hb-5m" class="status-dot status-err" title="5m Candles"></span>
+                <span id="hb-ml" class="status-dot status-err" title="ML"></span>
+                <span id="hb-router" class="status-dot status-err" title="Router"></span>
+            </div>
+            <div id="kill-warning" class="hidden text-red-400 font-semibold">
+                KILL SWITCH ACTIVE
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="border-b border-gray-700 mb-4">
+            <nav class="flex gap-1">
+                <button class="tab-btn active" data-tab="positions">Positions</button>
+                <button class="tab-btn" data-tab="signals">Signals</button>
+                <button class="tab-btn" data-tab="leaderboard">Leaderboard</button>
+                <button class="tab-btn" data-tab="engine">Engine</button>
+                <button class="tab-btn" data-tab="rejections">Rejections</button>
+            </nav>
+        </div>
+
+        <!-- Tab: Positions -->
+        <div id="tab-positions" class="tab-content active">
+            <div class="card overflow-hidden">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Side</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>Size</th>
+                            <th>PnL $</th>
+                            <th>PnL %</th>
+                            <th>Stop</th>
+                            <th>TP1</th>
+                            <th>Hold</th>
+                        </tr>
+                    </thead>
+                    <tbody id="positions-tbody">
+                        <tr><td colspan="10" class="text-center text-gray-500 py-8">No open positions</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Signals -->
+        <div id="tab-signals" class="tab-content">
+            <div class="card overflow-hidden">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Symbol</th>
+                            <th>Strategy</th>
+                            <th>Score</th>
+                            <th>Spread</th>
+                            <th>Status</th>
+                            <th>Reason</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signals-tbody">
+                        <tr><td colspan="7" class="text-center text-gray-500 py-8">No signals yet</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Leaderboard -->
+        <div id="tab-leaderboard" class="tab-content">
+            <div class="card overflow-hidden">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Symbol</th>
+                            <th>Price</th>
+                            <th>Score</th>
+                            <th>Vol Spike</th>
+                            <th>Trend 5m</th>
+                            <th>Tier</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboard-tbody">
+                        <tr><td colspan="7" class="text-center text-gray-500 py-8">No data</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: Engine -->
+        <div id="tab-engine" class="tab-content">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="card p-4">
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Performance</h3>
+                    <table class="text-sm">
+                        <tr><td class="text-gray-500 pr-4 py-1">Uptime</td><td id="eng-uptime" class="font-medium">0h 0m</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Profit Factor</td><td id="eng-pf" class="font-medium">0.00</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Avg Win</td><td id="eng-avg-win" class="font-medium">$0.00</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Avg Loss</td><td id="eng-avg-loss" class="font-medium">$0.00</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Biggest Win</td><td id="eng-big-win" class="font-medium">$0.00</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Biggest Loss</td><td id="eng-big-loss" class="font-medium">$0.00</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Max Drawdown</td><td id="eng-dd" class="font-medium">$0.00</td></tr>
+                    </table>
+                </div>
+                <div class="card p-4">
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">System</h3>
+                    <table class="text-sm">
+                        <tr><td class="text-gray-500 pr-4 py-1">REST Requests</td><td id="eng-rest" class="font-medium">0</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">REST 429s</td><td id="eng-429s" class="font-medium">0</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Ticks/5s</td><td id="eng-ticks" class="font-medium">0</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Candles/5s</td><td id="eng-candles" class="font-medium">0</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Candles Persisted</td><td id="eng-persisted" class="font-medium">0</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">ML Fresh %</td><td id="eng-ml-fresh" class="font-medium">0%</td></tr>
+                        <tr><td class="text-gray-500 pr-4 py-1">Vol Regime</td><td id="eng-vol" class="font-medium">normal</td></tr>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab: Rejections -->
+        <div id="tab-rejections" class="tab-content">
+            <div class="card p-4">
+                <div class="grid grid-cols-6 gap-4 text-center">
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-spread">0</div>
+                        <div class="text-xs text-gray-500">Spread</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-warmth">0</div>
+                        <div class="text-xs text-gray-500">Warmth</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-regime">0</div>
+                        <div class="text-xs text-gray-500">Regime</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-score">0</div>
+                        <div class="text-xs text-gray-500">Score</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-rr">0</div>
+                        <div class="text-xs text-gray-500">R:R Ratio</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-semibold" id="rej-limits">0</div>
+                        <div class="text-xs text-gray-500">Limits</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        // Tab switching
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+            });
+        });
+
+        // WebSocket connection
+        let ws = null;
+        let reconnectAttempts = 0;
+
+        function connect() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                reconnectAttempts = 0;
+                document.getElementById('ws-dot').className = 'status-dot status-ok';
+                document.getElementById('ws-status').textContent = 'Connected';
+            };
+            
+            ws.onmessage = (event) => {
+                updateUI(JSON.parse(event.data));
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('ws-dot').className = 'status-dot status-err';
+                document.getElementById('ws-status').textContent = 'Disconnected';
+                if (reconnectAttempts < 10) {
+                    reconnectAttempts++;
+                    setTimeout(connect, 2000 * reconnectAttempts);
+                }
+            };
+        }
+
+        function formatMoney(v, decimals = 2) {
+            return '$' + (parseFloat(v) || 0).toFixed(decimals);
+        }
+
+        function formatPct(v) {
+            const n = parseFloat(v) || 0;
+            return (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
+        }
+
+        function pnlClass(v) {
+            const n = parseFloat(v) || 0;
+            return n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
+        }
+
+        function updateHeartbeat(id, age) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const a = age || 999;
+            el.className = 'status-dot ' + (a < 5 ? 'status-ok' : a < 30 ? 'status-warn' : 'status-err');
+        }
+
+        function updateUI(data) {
+            if (data.error) return;
+
+            // Header
+            document.getElementById('last-update').textContent = new Date(data.ts).toLocaleTimeString();
+            document.getElementById('mode-badge').textContent = (data.mode || 'paper').toUpperCase();
+            document.getElementById('mode-badge').className = 'px-2 py-0.5 text-xs rounded ' + 
+                (data.mode === 'live' ? 'bg-green-800 text-green-200' : 'bg-yellow-800 text-yellow-200');
+            document.getElementById('profile-badge').textContent = data.profile || 'prod';
+
+            // Summary bar
+            document.getElementById('portfolio-value').textContent = formatMoney(data.portfolio_value);
+            
+            const dailyPnl = document.getElementById('daily-pnl');
+            dailyPnl.textContent = formatMoney(data.daily_pnl);
+            dailyPnl.className = 'text-xl font-semibold ' + pnlClass(data.daily_pnl);
+            
+            const unrealizedPnl = document.getElementById('unrealized-pnl');
+            unrealizedPnl.textContent = formatMoney(data.unrealized_pnl);
+            unrealizedPnl.className = 'text-xl font-semibold ' + pnlClass(data.unrealized_pnl);
+
+            const eng = data.engine || {};
+            const winRate = eng.win_rate || 0;
+            document.getElementById('win-rate').textContent = winRate.toFixed(0) + '%';
+            document.getElementById('win-rate').className = 'text-xl font-semibold ' + (winRate >= 50 ? 'pnl-pos' : 'pnl-neg');
+            
+            document.getElementById('trades-count').textContent = (eng.wins_today || 0) + 'W / ' + (eng.losses_today || 0) + 'L';
+            document.getElementById('available-budget').textContent = formatMoney(eng.bot_available_usd, 0);
+
+            // Status bar
+            document.getElementById('btc-regime').textContent = data.btc_regime || 'normal';
+            document.getElementById('exposure-pct').textContent = (eng.exposure_pct || 0).toFixed(0) + '%';
+            document.getElementById('position-count').textContent = data.positions?.length || 0;
+            document.getElementById('warm-count').textContent = data.warm_symbols || 0;
+            document.getElementById('streaming-count').textContent = data.symbols_streaming || 0;
+
+            // Heartbeats
+            const hb = data.heartbeats || {};
+            updateHeartbeat('hb-ws', hb.ws);
+            updateHeartbeat('hb-1m', hb.candles_1m);
+            updateHeartbeat('hb-5m', hb.candles_5m);
+            updateHeartbeat('hb-ml', hb.ml);
+            updateHeartbeat('hb-router', hb.order_router);
+
+            // Kill switch
+            const killWarning = document.getElementById('kill-warning');
+            const killBtn = document.getElementById('kill-btn');
+            killWarning.classList.toggle('hidden', !data.kill_switch);
+            killBtn.textContent = data.kill_switch ? 'Resume Trading' : 'Kill Switch';
+            killBtn.className = 'btn ' + (data.kill_switch ? 'btn-danger' : 'btn-secondary');
+
+            // Positions table
+            const positionsTbody = document.getElementById('positions-tbody');
+            if (data.positions?.length > 0) {
+                positionsTbody.innerHTML = data.positions.map(pos => `
+                    <tr>
+                        <td class="font-medium">${pos.symbol.replace('-USD', '')}</td>
+                        <td>LONG</td>
+                        <td class="mono">${formatMoney(pos.entry_price, 4)}</td>
+                        <td class="mono">${formatMoney(pos.current_price, 4)}</td>
+                        <td class="mono">${formatMoney(pos.size_usd, 0)}</td>
+                        <td class="mono ${pnlClass(pos.pnl_usd)}">${formatMoney(pos.pnl_usd)}</td>
+                        <td class="mono ${pnlClass(pos.pnl_pct)}">${formatPct(pos.pnl_pct)}</td>
+                        <td class="mono text-red-400">${formatMoney(pos.stop_price, 4)}</td>
+                        <td class="mono text-green-400">${formatMoney(pos.tp1_price, 4)}</td>
+                        <td>${pos.hold_minutes}m</td>
+                    </tr>
+                `).join('');
+            } else {
+                positionsTbody.innerHTML = '<tr><td colspan="10" class="text-center text-gray-500 py-8">No open positions</td></tr>';
+            }
+
+            // Signals table
+            const signalsTbody = document.getElementById('signals-tbody');
+            if (data.recent_signals?.length > 0) {
+                signalsTbody.innerHTML = data.recent_signals.map(sig => `
+                    <tr>
+                        <td class="text-gray-500">${sig.ts ? new Date(sig.ts).toLocaleTimeString() : '--'}</td>
+                        <td class="font-medium">${(sig.symbol || '--').replace('-USD', '')}</td>
+                        <td>${sig.strategy || '--'}</td>
+                        <td class="mono">${sig.score || 0}</td>
+                        <td class="mono">${(sig.spread_bps || 0).toFixed(1)}bps</td>
+                        <td>${sig.taken ? '<span class="text-green-400">TAKEN</span>' : '<span class="text-red-400">BLOCKED</span>'}</td>
+                        <td class="text-gray-500 truncate max-w-xs">${sig.reason || '--'}</td>
+                    </tr>
+                `).join('');
+            } else {
+                signalsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No signals yet</td></tr>';
+            }
+
+            // Leaderboard table
+            const leaderboardTbody = document.getElementById('leaderboard-tbody');
+            if (data.burst_leaderboard?.length > 0) {
+                leaderboardTbody.innerHTML = data.burst_leaderboard.map(b => `
+                    <tr>
+                        <td class="text-gray-500">#${b.rank}</td>
+                        <td class="font-medium">${b.symbol.replace('-USD', '')}</td>
+                        <td class="mono">${formatMoney(b.price, 4)}</td>
+                        <td class="mono">${b.burst_score?.toFixed(0) || 0}</td>
+                        <td class="mono">${b.vol_spike?.toFixed(2) || '1.00'}x</td>
+                        <td class="mono ${pnlClass(b.trend_5m)}">${formatPct(b.trend_5m)}</td>
+                        <td><span class="px-2 py-0.5 rounded text-xs ${
+                            b.tier === 'tier1' ? 'bg-green-900 text-green-300' : 
+                            b.tier === 'tier2' ? 'bg-blue-900 text-blue-300' : 
+                            'bg-gray-700 text-gray-300'
+                        }">${b.tier}</span></td>
+                    </tr>
+                `).join('');
+            } else {
+                leaderboardTbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No data</td></tr>';
+            }
+
+            // Engine stats
+            const uptimeSec = eng.uptime_seconds || 0;
+            document.getElementById('eng-uptime').textContent = 
+                Math.floor(uptimeSec / 3600) + 'h ' + Math.floor((uptimeSec % 3600) / 60) + 'm';
+            document.getElementById('eng-pf').textContent = (eng.profit_factor || 0).toFixed(2);
+            document.getElementById('eng-avg-win').textContent = formatMoney(eng.avg_win);
+            document.getElementById('eng-avg-loss').textContent = formatMoney(eng.avg_loss);
+            document.getElementById('eng-big-win').textContent = formatMoney(eng.biggest_win);
+            document.getElementById('eng-big-loss').textContent = formatMoney(eng.biggest_loss);
+            document.getElementById('eng-dd').textContent = formatMoney(eng.max_drawdown);
+            document.getElementById('eng-rest').textContent = (eng.rest_requests || 0).toLocaleString();
+            document.getElementById('eng-429s').textContent = eng.rest_429s || 0;
+            document.getElementById('eng-ticks').textContent = eng.ticks_5s || 0;
+            document.getElementById('eng-candles').textContent = eng.candles_5s || 0;
+            document.getElementById('eng-persisted').textContent = (eng.candles_persisted || 0).toLocaleString();
+            document.getElementById('eng-ml-fresh').textContent = (eng.ml_fresh_pct || 0).toFixed(0) + '%';
+            document.getElementById('eng-vol').textContent = eng.vol_regime || 'normal';
+
+            // Rejections
+            const rej = data.rejections || {};
+            document.getElementById('rej-spread').textContent = (rej.spread || 0).toLocaleString();
+            document.getElementById('rej-warmth').textContent = (rej.warmth || 0).toLocaleString();
+            document.getElementById('rej-regime').textContent = (rej.regime || 0).toLocaleString();
+            document.getElementById('rej-score').textContent = (rej.score || 0).toLocaleString();
+            document.getElementById('rej-rr').textContent = (rej.rr || 0).toLocaleString();
+            document.getElementById('rej-limits').textContent = (rej.limits || 0).toLocaleString();
+        }
+
+        async function toggleKillSwitch() {
+            try {
+                await fetch('/api/kill', { method: 'POST' });
+            } catch (e) {
+                console.error('Failed to toggle kill switch:', e);
+            }
+        }
+
+        connect();
+    </script>
+</body>
+</html>

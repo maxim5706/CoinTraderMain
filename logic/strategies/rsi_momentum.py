@@ -119,14 +119,14 @@ class RSIMomentumStrategy(BaseStrategy):
             direction=SignalDirection.LONG,
             edge_score_base=min(95, score),
             trend_score=50 + int(trend_5m * 10),
-            setup_quality=rsi_move / 20,  # Quality based on RSI momentum
+            entry_price=price,
+            stop_price=price * 0.965,  # 3.5% stop
             reasons=[
                 f"rsi_reset_{rsi_prev:.0f}→{rsi:.0f}",
                 f"above_vwap_{vwap_distance:.1%}",
                 f"momentum_{trend_5m:.1f}%",
                 f"vol_{vol_spike:.1f}x"
-            ],
-            is_valid=True
+            ]
         )
     
     def _calculate_rsi(self, closes: np.ndarray, period: int = 14) -> Optional[float]:
