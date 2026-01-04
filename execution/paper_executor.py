@@ -36,6 +36,12 @@ class PaperExecutor(IExecutor):
             return False, f"Trade size too large: ${size_usd:.2f} > ${self.config.max_trade_usd:.2f}"
         return True, "OK"
 
+    def update_config(self, config: PaperModeConfig) -> None:
+        """Update runtime config without resetting balances."""
+        self.config = config
+        self.enable_slippage = getattr(config, "enable_slippage", True)
+        self.slippage_bps = getattr(config, "slippage_bps", 2.0)
+
     async def open_position(
         self,
         symbol: str,
@@ -81,6 +87,8 @@ class PaperExecutor(IExecutor):
         pnl_pct = (net_pnl / position.size_usd) * 100 if position.size_usd else 0.0
 
         self._credit(position.size_usd + net_pnl)
+        if self.portfolio and hasattr(self.portfolio, "record_realized_pnl"):
+            self.portfolio.record_realized_pnl(net_pnl)
 
         return TradeResult(
             symbol=position.symbol,
@@ -93,4 +101,5 @@ class PaperExecutor(IExecutor):
             pnl=net_pnl,
             pnl_pct=pnl_pct,
             exit_reason=reason,
+            strategy_id=getattr(position, 'strategy_id', '') or '',
         )

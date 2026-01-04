@@ -30,6 +30,15 @@ cp .env.example .env
 uv run python run.py
 ```
 
+## Config Flow (2025-12-30)
+
+- `start_config_*`: immutable boot snapshot built once at startup.
+- `running_config_*`: refreshed when runtime config changes via the dashboard.
+- **2025-12-29**: `config_start`/`config_running` snapshots are redacted (API keys) and exposed via `/api/state` + `/api/config` for dashboard visibility.
+- **2025-12-29**: `/api/config/refresh` reloads runtime config from disk; dashboard shows start vs running diffs.
+- **2025-12-30**: `TradePlanner` converts `Intent` to `TradePlan` with explicit sizing precedence.
+- Runtime updates: `ConfigManager` → `settings` → `RuntimeConfigStore.refresh()` → `OrderRouter.update_config()`.
+
 ## Project Structure
 
 ```

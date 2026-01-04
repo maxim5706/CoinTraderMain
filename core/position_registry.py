@@ -9,11 +9,14 @@ Handles:
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Callable
 from datetime import datetime, timezone
 
+from core.logging_utils import get_logger
 from core.models import Position, PositionState
 from core.mode_configs import BaseTradingConfig
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -48,6 +51,32 @@ class PositionRegistry:
         self.limits = self._create_limits()
         self._positions: Dict[str, Position] = {}
         self._dust_positions: Dict[str, Position] = {}
+        self._exchange_holdings_func: Optional[Callable[[], Set[str]]] = None
+    
+    def set_exchange_holdings_func(self, func: Callable[[], Set[str]]):
+        """Set function to get actual exchange holdings for reconciliation."""
+        self._exchange_holdings_func = func
+    
+    def get_reconciled_active_count(self) -> int:
+        """
+        Get active position count, reconciled with exchange if possible.
+        This prevents the gate from blocking when registry is out of sync.
+        """
+        registry_count = len(self._positions)
+        
+        if self._exchange_holdings_func:
+            try:
+                exchange_symbols = self._exchange_holdings_func()
+                # Count positions that exist both in registry AND on exchange
+                reconciled = sum(1 for s in self._positions if s in exchange_symbols)
+                if reconciled != registry_count:
+                    logger.debug("[REGISTRY] Position count: registry=%d, reconciled=%d", 
+                                registry_count, reconciled)
+                return reconciled
+            except Exception:
+                pass
+        
+        return registry_count
         
     def _create_limits(self) -> PositionLimits:
         """Create position limits from config."""
@@ -57,6 +86,11 @@ class PositionRegistry:
             max_positions=self.config.max_positions,
             min_hold_seconds=getattr(self.config, 'min_hold_seconds', 30),
         )
+
+    def update_config(self, config: BaseTradingConfig) -> None:
+        """Update config and recompute derived limits."""
+        self.config = config
+        self.limits = self._create_limits()
     
     def add_position(self, position: Position) -> bool:
         """
@@ -144,10 +178,12 @@ class PositionRegistry:
         if position_value_usd < self.limits.min_position_usd:
             return False, f"Below minimum ${self.limits.min_position_usd}"
         
-        # Check max positions
-        active_count = len(self._positions)
+        # Check max positions using reconciled count
+        active_count = self.get_reconciled_active_count()
         if active_count >= self.limits.max_positions:
-            return False, f"Max positions ({self.limits.max_positions}) reached"
+            logger.info("[REGISTRY] Gate blocked: %d/%d positions (registry has %d)",
+                       active_count, self.limits.max_positions, len(self._positions))
+            return False, f"Max positions ({self.limits.max_positions}) reached (currently {active_count})"
         
         # Check strategy-specific limits (if configured)
         strategy_positions = self.get_positions_by_strategy(strategy_id)

@@ -32,32 +32,47 @@ class Settings(BaseSettings):
     profile: str = Field(default="prod", alias="PROFILE")
     paper_start_balance_usd: float = Field(default=1000.0, alias="PAPER_START_BALANCE")
     
-    # Risk - Exposure-based (no hard position count limit)
-    portfolio_max_exposure_pct: float = 0.80  # 80% max in positions (was 70%)
-    position_base_pct: float = 0.03           # 3% base size per trade
-    position_min_pct: float = 0.02            # 2% minimum
-    position_max_pct: float = 0.08            # 8% maximum (was 6%)
-    max_trade_usd: float = Field(default=15.0, alias="MAX_TRADE_USD")  # Default $15
-    daily_max_loss_usd: float = Field(default=25.0, alias="DAILY_MAX_LOSS_USD")
-    max_positions: int = 50                   # No artificial limit - budget is the limit
+    # Risk - Scales with portfolio growth
+    # 50 positions × ~1.6% avg = 80% exposure target
+    portfolio_max_exposure_pct: float = 0.85  # 85% max in positions (allows 50 positions)
+    position_base_pct: float = 0.015          # 1.5% base size per trade
+    position_min_pct: float = 0.01            # 1% minimum (~$6 at $600, ~$10 at $1000)
+    position_max_pct: float = 0.025           # 2.5% maximum (~$15 at $600, ~$25 at $1000)
+    risk_per_trade_pct: float = 0.01          # 1% risk per trade
+    max_trade_usd: float = Field(default=25.0, alias="MAX_TRADE_USD")  # $25 max (scales up)
+    daily_max_loss_pct: float = 0.02          # -2% daily loss limit (~$12)
+    daily_max_loss_usd: float = Field(default=12.0, alias="DAILY_MAX_LOSS_USD")  # Fallback
+    max_positions: int = 50                   # No hard cap - exposure % is the real limit
     
-    # Tiered sizing - BEAST MODE with learning positions
-    whale_trade_usd: float = 30.0             # A+ setups (85+ score, confluence)
+    # Tiered sizing - Ratio-based (scales with portfolio)
+    # Percentages of portfolio value, with USD fallbacks for safety
+    whale_trade_pct: float = 0.020            # 2% of portfolio for A+ setups
+    whale_trade_usd: float = 12.0             # Fallback USD (used if pct calc fails)
     whale_score_min: int = 85                 # Min score for whale
     whale_confluence_min: int = 2             # Min confluence for whale
-    strong_trade_usd: float = 15.0            # A setups (70-84 score)
+    strong_trade_pct: float = 0.016           # 1.6% of portfolio for A setups
+    strong_trade_usd: float = 10.0            # Fallback USD
     strong_score_min: int = 70                # Min score for strong
-    normal_trade_usd: float = 10.0            # B setups (55-69 score)
-    scout_trade_usd: float = 5.0              # C setups - LEARNING positions (40-54 score)
-    scout_score_min: int = 40                 # Min score for scout (was 45)
-    whale_max_positions: int = 2              # Max whale bets at once
-    strong_max_positions: int = 4             # Max strong bets
-    scout_max_positions: int = 6              # Max scout positions (learning)
+    normal_trade_pct: float = 0.013           # 1.3% of portfolio for B setups
+    normal_trade_usd: float = 8.0             # Fallback USD
+    scout_trade_pct: float = 0.010            # 1% of portfolio for learning
+    scout_trade_usd: float = 6.0              # Fallback USD
+    scout_score_min: int = 55                 # Allow some scout trades
+    whale_max_positions: int = 1              # Max 1 whale at a time
+    strong_max_positions: int = 2             # Max 2 strong
+    scout_max_positions: int = 1              # Max 1 scout
+    min_trade_usd: float = 5.0                # Absolute minimum to avoid dust
+    
+    # Stacking (add to winners)
+    stacking_enabled: bool = True             # Allow adding to winning positions
+    stacking_min_profit_pct: float = 2.0      # Min +2% before stacking allowed
+    stacking_max_adds: int = 1                # Max 1 add per position (2x total)
+    stacking_green_candles: int = 3           # Require 3 green candles (positive incline)
     
     # Fees (Intro tier)
     taker_fee_pct: float = 0.012
     maker_fee_pct: float = 0.006
-    use_limit_orders: bool = True
+    use_limit_orders: bool = True  # Limit orders = 0.6% vs 1.2% taker
     limit_buffer_pct: float = 0.003
     
     # Watchlist
@@ -76,22 +91,25 @@ class Settings(BaseSettings):
     breakout_buffer_pct: float = 0.1
     breakout_vol_mult: float = 1.3
     
-    # Stops/TPs (after fees: 1.8% round-trip with limit orders)
-    # R:R = tp1_pct / fixed_stop_pct must be >= min_rr_ratio
-    fixed_stop_pct: float = 0.035  # 3.5% stop
-    tp1_pct: float = 0.07          # 7% TP1 → R:R = 2.0
-    tp2_pct: float = 0.10          # 10% TP2
-    tp1_partial_pct: float = 0.5
-    stop_atr_mult: float = 1.2  # Tighter ATR stops (was 1.5)
+    # Stops/TPs - Structure-based, R-multiple driven
+    # Target: 40-55% win rate with 1.5-2.5 R:R
+    fixed_stop_pct: float = 0.03   # 3% default stop (structure overrides)
+    tp1_pct: float = 0.045         # 4.5% TP1 = 1.5R (take partial)
+    tp2_pct: float = 0.075         # 7.5% TP2 = 2.5R (let winners run)
+    tp1_partial_pct: float = 0.5   # Take 50% at TP1
+    stop_atr_mult: float = 1.5     # ATR-based stops (structure)
     tp2_impulse_mult: float = 0.5
-    max_hold_minutes: int = 120  # Reduce from 180 to 120 min
-    time_stop_enabled: bool = True  # Enable time stops
-    min_rr_ratio: float = 1.5  # R:R minimum (7/3.5 = 2.0 passes)
+    max_hold_minutes: int = 240    # 4 hours max hold (let trades develop)
+    time_stop_enabled: bool = True
+    min_rr_ratio: float = 1.5      # Minimum 1.5 R:R required
     
-    # Trailing
-    trail_be_trigger_pct: float = 0.025
-    trail_start_pct: float = 0.035
-    trail_lock_pct: float = 0.50
+    # Trailing - R-multiple based
+    # Activate trailing at +0.75R, move to BE at +1R
+    trail_be_trigger_r: float = 1.0   # Move to BE at +1R profit
+    trail_start_r: float = 0.75       # Start trailing at +0.75R
+    trail_be_trigger_pct: float = 0.03  # 3% = ~1R (fallback)
+    trail_start_pct: float = 0.0225    # 2.25% = ~0.75R (fallback)
+    trail_lock_pct: float = 0.50       # Lock 50% of gains (let winners run)
     
     # Patterns
     triple_top_tolerance_pct: float = 0.5
@@ -102,7 +120,7 @@ class Settings(BaseSettings):
     use_whitelist: bool = False
     
     # Fast mode
-    fast_mode_enabled: bool = True
+    fast_mode_enabled: bool = False
     fast_confidence_min: float = 0.65
     fast_spread_max_bps: float = 18.0
     fast_stop_pct: float = 2.5
@@ -116,7 +134,7 @@ class Settings(BaseSettings):
     ml_boost_min: float = -5.0
     ml_boost_max: float = 10.0
     base_score_strict_cutoff: float = 40
-    entry_score_min: float = 40  # BEAST MODE - lowered from 45
+    entry_score_min: float = 60.0  # Quality entries only
     
     # Thesis invalidation - tighter to prevent big losses
     thesis_trend_flip_5m: float = -0.3  # Tighter from -0.5
@@ -124,11 +142,11 @@ class Settings(BaseSettings):
     thesis_vwap_distance: float = -0.8  # Tighter from -1.0
     
     # Liquidity (RELAXED for full coverage)
-    spread_max_bps: float = 50.0  # Allow wider spreads for memes/small caps (was 25)
+    spread_max_bps: float = 50.0  # Reasonable spread tolerance
     min_24h_volume_usd: float = 100000
     
     # Order management
-    order_cooldown_seconds: int = 1800  # 30 min cooldown per symbol
+    order_cooldown_seconds: int = 600  # 10 min cooldown - faster re-entry
     order_cooldown_min_seconds: int = 300  # 5 min hard cooldown after any order
     
     # Circuit breaker
@@ -136,7 +154,7 @@ class Settings(BaseSettings):
     circuit_breaker_reset_seconds: int = 300  # Time to wait before retry (5 min)
     
     # Stop order health check
-    stop_health_check_interval: int = 300  # Seconds between re-arming checks (5 min)
+    stop_health_check_interval: int = 60  # Seconds between re-arming checks (1 min - faster recovery)
     
     # Position thresholds
     position_min_usd: float = 1.0  # Minimum USD value to consider a position

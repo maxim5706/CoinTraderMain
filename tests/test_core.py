@@ -36,8 +36,7 @@ class TestImports:
         assert OrderRouter is not None
     
     def test_ui_imports(self):
-        from ui import DashboardV2, web_app
-        assert DashboardV2 is not None
+        from ui import web_app
         assert web_app is not None
 
 

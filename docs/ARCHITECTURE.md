@@ -2,7 +2,7 @@
 
 > **Core Reference Document** - The source of truth for system design and dependencies.
 > 
-> **Version:** 1.0 | **Exchange:** Coinbase | **Reviewed:** 2025-12-17
+> **Version:** 1.1 | **Exchange:** Coinbase | **Reviewed:** 2025-12-21
 
 ---
 
@@ -72,19 +72,30 @@ CONCEPTUAL LAYERS (grouped by responsibility):
 ```
 1. Config          → Load .env, validate settings
 2. Models          → Pure data structures (no I/O)
-3. State/Events    → Initialize event bus
+3. State/Events    → Initialize event bus, StateWriter for dashboard
 4. Persistence     → Load saved positions, recover from backup if needed
 5. Datafeeds       → Connect WebSocket, start REST polling, backfill history
 6. Intelligence    → Initialize indicators (uses datafeed output)
 7. Risk            → Load daily stats, cooldowns (before any order placement)
 8. Strategies      → Ready to analyze (may compute signals; Risk gates orders)
-9. Order Router    → Wire up executor, portfolio, persistence (for order placement)
-10. UI             → Start dashboard display loop
+9. Order Router    → Wire up executor, portfolio, persistence
+10. Exchange Sync  → Sync positions from exchange to ensure all holdings tracked
+11. StateWriter    → Start writing bot_state.json for dashboard (after sync)
+12. UI             → Dashboard reads bot_state.json via shared_state.py
 
 Note: Strategies may compute signals regardless of Risk state; Risk gates order
 placement, not signal generation. This separation allows signal logging even
 when trading is paused.
 ```
+
+### Config Normalization (2025-12-30)
+
+- Boot snapshot: `start_config_live()` / `start_config_paper()` built once, treated as immutable for the run.
+- Runtime updates: `ConfigManager` applies changes to `settings`, then `RuntimeConfigStore.refresh()` rebuilds `running_config`.
+- Propagation: `run_v2.py` calls `OrderRouter.update_config()` so executors/portfolio/registry see new values.
+- **2025-12-29**: Snapshot exports (`config_start`, `config_running`) redact API keys before dashboard/API exposure.
+- **2025-12-29**: `/api/config/refresh` reloads runtime config from disk; dashboard renders start vs running diffs.
+- **2025-12-30**: Risk planning uses `Intent` → `TradePlan` with sizing in `PositionSizer`; OrderRouter executes plans without mutation.
 
 ---
 
@@ -265,13 +276,52 @@ when trading is paused.
 
 ---
 
+## Process Management (PM2)
+
+The bot runs as two separate PM2-managed processes defined in `ecosystem.config.js`:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         PM2 PROCESS ARCHITECTURE                             │
+│                                                                              │
+│   ┌─────────────────────────┐       ┌─────────────────────────┐            │
+│   │       COIN (Web)        │       │     COIN-BOT (Trading)  │            │
+│   ├─────────────────────────┤       ├─────────────────────────┤            │
+│   │ ui/web_server.py        │       │ run_v2.py --mode live   │            │
+│   │ Port: 8080              │       │                         │            │
+│   │                         │       │ • WebSocket streaming   │            │
+│   │ • Serves dashboard UI   │◄──────│ • Strategy evaluation   │            │
+│   │ • Reads bot_state.json  │ file  │ • Order execution       │            │
+│   │ • API endpoints         │       │ • Writes bot_state.json │            │
+│   │                         │       │ • StateWriter thread    │            │
+│   └─────────────────────────┘       └─────────────────────────┘            │
+│                                                                              │
+│   Communication: bot_state.json (written by COIN-BOT, read by COIN)         │
+│   Frequency: StateWriter writes every 500ms                                 │
+│   Race condition handling: Atomic writes + retry logic with backoff         │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### PM2 Commands
+```bash
+pm2 start ecosystem.config.js    # Start both processes
+pm2 restart all                  # Restart both
+pm2 logs COIN-BOT               # View trading bot logs
+pm2 logs COIN                   # View web server logs
+pm2 list                        # Show process status
+```
+
+---
+
 ## File Tree (Annotated)
 
 ```
 CoinTrader/
 ├── run.py                    # Entry point (calls run_v2.main)
-├── run_v2.py                 # TradingBotV2 - main orchestrator
+├── run_v2.py                 # TradingBotV2 - main orchestrator (92KB)
 ├── run_headless.py           # Headless mode (no TUI)
+├── ecosystem.config.js       # PM2 process configuration
 ├── .env                      # API keys, mode, secrets
 │
 ├── core/                     # L0-L4: Foundation
@@ -306,8 +356,11 @@ CoinTrader/
 │   ├── pnl_engine.py         # L4: PnL calculations
 │   ├── position_registry.py  # L4: Position limits enforcement
 │   ├── trading_container.py  # DI container
-│   ├── trading_factory.py    # Creates implementations
 │   ├── trading_interfaces.py # Abstract contracts (IExecutor, etc.)
+│   ├── shared_state.py       # Bot↔Dashboard IPC (bot_state.json)
+│   ├── bot_controller.py     # Runtime control (start/stop/kill)
+│   ├── config_manager.py     # Dynamic config management
+│   ├── strategy_registry.py  # Strategy discovery and registration
 │   ├── alerts.py             # Telegram/Discord alerts
 │   ├── logger.py             # JSONL trade logging
 │   ├── logging_utils.py      # Logging configuration
@@ -344,15 +397,17 @@ CoinTrader/
 │
 ├── execution/                # L8-L10: Execution
 │   ├── risk.py               # L8: DailyStats, CircuitBreaker ✅
-│   ├── order_router.py       # L9: Slim coordinator (~400 lines) ✅
+│   ├── order_router.py       # L9: Central coordinator (21KB) ✅
 │   ├── entry_gates.py        # L9: 21 gate checks + sizing ✅
 │   ├── exit_manager.py       # L9: Exit logic (stops, TPs, thesis) ✅
-│   ├── exchange_sync.py      # L9: Portfolio/position sync ✅
+│   ├── exchange_sync.py      # L9: Portfolio/position sync (24KB) ✅
 │   ├── signal_batch.py       # L9: Batch signal processing ✅
 │   ├── rebalancer.py         # L9: Portfolio rebalancing ✅
 │   ├── rejection_tracker.py  # L9: Gate rejection stats ✅
 │   ├── order_manager.py      # L9: Order lifecycle tracking
 │   ├── order_utils.py        # L9: Order helpers, rate limiter
+│   ├── position_controller.py # L9: Position management API
+│   ├── trading_factory.py    # Creates mode-specific implementations
 │   ├── paper_executor.py     # L10: Simulated execution
 │   ├── live_executor.py      # L10: Real Coinbase execution
 │   ├── paper_stops.py        # L10: Simulated stops
@@ -371,10 +426,15 @@ CoinTrader/
 ├── tools/                    # Utility scripts (optional)
 │
 ├── data/                     # Runtime data (gitignored)
+│   ├── bot_state.json        # Dashboard IPC (written by StateWriter)
 │   ├── paper_positions.json
 │   ├── live_positions.json
-│   ├── cooldowns.json
-│   └── candles/
+│   ├── paper_cooldowns.json
+│   ├── live_cooldowns.json
+│   ├── strategy_registry.json # Strategy metadata cache
+│   ├── untradeable_products.json # Blocklist
+│   ├── cointrader.duckdb     # DuckDB analytics store
+│   └── candles_1m/           # Candle cache
 │
 ├── logs/                     # JSONL logs (gitignored)
 │
@@ -706,4 +766,78 @@ GateReason = Literal[
 
 ---
 
-*Architecture v1.0 | Reviewed: 2025-12-17*
+## Dashboard IPC (shared_state.py)
+
+The trading bot (COIN-BOT) and web dashboard (COIN) communicate via `bot_state.json`:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        DASHBOARD IPC FLOW                                    │
+│                                                                              │
+│   COIN-BOT Process                              COIN Process                 │
+│   ┌─────────────────────┐                      ┌─────────────────────┐      │
+│   │ TradingBotV2        │                      │ web_server.py       │      │
+│   │                     │                      │                     │      │
+│   │ _update_positions   │                      │ GET /api/state      │      │
+│   │ _state              │                      │                     │      │
+│   └──────────┬──────────┘                      └──────────┬──────────┘      │
+│              │                                            │                  │
+│              ▼                                            │                  │
+│   ┌─────────────────────┐                                │                  │
+│   │ StateWriter thread  │                                │                  │
+│   │ (every 500ms)       │                                │                  │
+│   └──────────┬──────────┘                                │                  │
+│              │                                            │                  │
+│              ▼                                            ▼                  │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │                     data/bot_state.json                              │   │
+│   │  • Atomic write (temp file → rename)                                 │   │
+│   │  • Read with retry + exponential backoff                             │   │
+│   │  • Contains: mode, positions, portfolio, WS status, signals          │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Functions
+- `write_state(state)`: Atomic JSON write with temp file + rename
+- `read_state()`: Retry logic (5 attempts) with exponential backoff
+- `StateWriter`: Background thread that writes every 500ms
+
+---
+
+## TODO / Areas for Investigation
+
+### High Priority
+| Item | Description | File(s) |
+|------|-------------|---------|
+| **Exit Monitoring** | Verify exits are triggering for tracked positions (stop loss, TP, thesis invalidation) | `execution/exit_manager.py` |
+| **Position Tier Limits** | Consider if 2+4+6=12 tier limits are too restrictive with 14 positions | `core/config.py` |
+| **Stale Price Detection** | Add alerting when WebSocket prices are stale (>30s old) | `datafeeds/collectors/candle_collector.py` |
+
+### Medium Priority
+| Item | Description | File(s) |
+|------|-------------|---------|
+| **Intelligence Hardening** | L6 marked as pending review | `logic/intelligence.py`, `logic/edge_model.py` |
+| **UI Hardening** | L11 marked as pending review | `ui/dashboard_v2.py`, `ui/web_server.py` |
+| **DuckDB Integration** | Document DuckDB usage for analytics | `data/cointrader.duckdb` |
+| **Test Coverage** | Expand test suite beyond basic core tests | `tests/` |
+
+### Low Priority / Nice to Have
+| Item | Description | File(s) |
+|------|-------------|---------|
+| **Multi-Exchange** | Abstract exchange layer for future expansion | `execution/live_executor.py` |
+| **Config Hot Reload** | Allow config changes without restart | `core/config_manager.py` |
+| **Prometheus Metrics** | Export metrics for monitoring | New file |
+| **Backtest Mode** | Historical data replay for strategy testing | New feature |
+
+### Recently Fixed (2025-12-21)
+- ✅ Position sync from exchange on startup
+- ✅ Pre-entry portfolio refresh to prevent double-stacking
+- ✅ StateWriter timing (start after position sync)
+- ✅ PM2 dual-process architecture (COIN + COIN-BOT)
+- ✅ shared_state.py race condition handling
+
+---
+
+*Architecture v1.1 | Reviewed: 2025-12-21*

@@ -28,7 +28,7 @@ start_bot() {
         nohup bash -c '
             while true; do
                 echo "[$(date)] Bot starting..."
-                .venv/bin/python run_v2.py 2>&1 | tee -a logs/bot.log
+                .venv/bin/python run_v2.py --mode live 2>&1 | tee -a logs/bot.log
                 EXIT_CODE=$?
                 echo "[$(date)] Bot exited with code $EXIT_CODE"
                 if [ $EXIT_CODE -eq 0 ]; then
@@ -44,7 +44,7 @@ start_bot() {
         echo -e "Logs: tail -f $LOGFILE"
     else
         # Run in foreground
-        .venv/bin/python run_v2.py
+        .venv/bin/python run_v2.py --mode live
     fi
 }
 

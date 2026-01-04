@@ -10,11 +10,21 @@ Format: logs/candles/{symbol}/{tf}.jsonl
 """
 
 import json
+import os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 from dataclasses import dataclass, asdict
 import threading
+
+try:
+    import pandas as pd
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    PARQUET_AVAILABLE = True
+except ImportError:
+    PARQUET_AVAILABLE = False
+    pd = None
 
 from core.models import Candle
 from core.mode_paths import get_logs_dir
@@ -93,13 +103,17 @@ class CandleStore:
         path.mkdir(parents=True, exist_ok=True)
         return path
     
-    def _get_file_path(self, symbol: str, tf: str) -> Path:
+    def _get_file_path(self, symbol: str, tf: str, ext: str = "jsonl") -> Path:
         """Get file path for symbol/timeframe."""
         # Sanitize symbol for filesystem
         safe_symbol = symbol.replace("/", "-").replace(":", "-")
         symbol_dir = self.base_dir / safe_symbol
         symbol_dir.mkdir(parents=True, exist_ok=True)
-        return symbol_dir / f"{tf}.jsonl"
+        return symbol_dir / f"{tf}.{ext}"
+    
+    def _get_parquet_path(self, symbol: str, tf: str) -> Path:
+        """Get parquet file path for symbol/timeframe."""
+        return self._get_file_path(symbol, tf, "parquet")
     
     def write_candle(self, symbol: str, candle: Candle, tf: str, source: str = "ws"):
         """Write a single candle to storage."""
@@ -162,7 +176,79 @@ class CandleStore:
         max_age_hours: int = 24,
         max_count: int = 500
     ) -> List[Candle]:
-        """Load candles from storage."""
+        """Load candles from storage. Tries parquet first (fast), then JSONL."""
+        # Try parquet first (100x faster)
+        if PARQUET_AVAILABLE:
+            candles = self._load_from_parquet(symbol, tf, max_age_hours, max_count)
+            if candles:
+                return candles
+        
+        # Fall back to JSONL
+        return self._load_from_jsonl(symbol, tf, max_age_hours, max_count)
+    
+    def _load_from_parquet(
+        self,
+        symbol: str,
+        tf: str,
+        max_age_hours: int = 24,
+        max_count: int = 500
+    ) -> List[Candle]:
+        """Load candles from parquet file (fast)."""
+        parquet_path = self._get_parquet_path(symbol, tf)
+        
+        if not parquet_path.exists():
+            return []
+        
+        try:
+            df = pd.read_parquet(parquet_path)
+            if df.empty:
+                return []
+            
+            # Convert timestamp column
+            if 'ts' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['ts'], utc=True)
+            elif 'timestamp' in df.columns:
+                df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+            else:
+                return []
+            
+            # Filter by age
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            df = df[df['timestamp'] >= cutoff]
+            
+            # Sort and limit
+            df = df.sort_values('timestamp').drop_duplicates(subset=['timestamp'])
+            if len(df) > max_count:
+                df = df.tail(max_count)
+            
+            # Convert to Candle objects
+            candles = []
+            for _, row in df.iterrows():
+                candle = Candle(
+                    timestamp=row['timestamp'].to_pydatetime(),
+                    open=float(row['open']),
+                    high=float(row['high']),
+                    low=float(row['low']),
+                    close=float(row['close']),
+                    volume=float(row.get('volume', 0))
+                )
+                candles.append(candle)
+            
+            self.candles_loaded += len(candles)
+            return candles
+            
+        except Exception as e:
+            logger.debug("[STORE] Parquet load failed %s/%s: %s", symbol, tf, e)
+            return []
+    
+    def _load_from_jsonl(
+        self,
+        symbol: str,
+        tf: str,
+        max_age_hours: int = 24,
+        max_count: int = 500
+    ) -> List[Candle]:
+        """Load candles from JSONL file (slower but append-friendly)."""
         file_path = self._get_file_path(symbol, tf)
         
         if not file_path.exists():
@@ -202,6 +288,65 @@ class CandleStore:
         except Exception as e:
             logger.warning("[STORE] Error loading %s/%s: %s", symbol, tf, e)
             return []
+    
+    def compact_to_parquet(self, symbol: str, tf: str) -> bool:
+        """
+        Compact JSONL file to parquet for faster future reads.
+        Called periodically (e.g., every hour or on shutdown).
+        """
+        if not PARQUET_AVAILABLE:
+            return False
+        
+        jsonl_path = self._get_file_path(symbol, tf)
+        parquet_path = self._get_parquet_path(symbol, tf)
+        
+        if not jsonl_path.exists():
+            return False
+        
+        try:
+            # Load all candles from JSONL
+            candles = self._load_from_jsonl(symbol, tf, max_age_hours=168, max_count=10000)
+            if not candles:
+                return False
+            
+            # Convert to DataFrame
+            data = []
+            for c in candles:
+                data.append({
+                    'ts': c.timestamp.isoformat(),
+                    'open': c.open,
+                    'high': c.high,
+                    'low': c.low,
+                    'close': c.close,
+                    'volume': c.volume,
+                })
+            
+            df = pd.DataFrame(data)
+            
+            # Write to parquet
+            df.to_parquet(parquet_path, index=False, compression='snappy')
+            
+            logger.info("[STORE] Compacted %s/%s: %d candles to parquet", symbol, tf, len(candles))
+            return True
+            
+        except Exception as e:
+            logger.warning("[STORE] Compact failed %s/%s: %s", symbol, tf, e)
+            return False
+    
+    def compact_all(self):
+        """Compact all JSONL files to parquet."""
+        if not PARQUET_AVAILABLE:
+            logger.warning("[STORE] Parquet not available, skipping compact")
+            return
+        
+        compacted = 0
+        for symbol in self.list_symbols():
+            for tf in ["1m", "5m", "1h", "1d"]:
+                if self.compact_to_parquet(symbol, tf):
+                    compacted += 1
+        
+        if compacted:
+            logger.info("[STORE] Compacted %d files to parquet", compacted)
     
     def _deduplicate(self, candles: List[Candle]) -> List[Candle]:
         """Remove duplicate candles by timestamp."""
@@ -243,6 +388,18 @@ class CandleStore:
         logger.info("[STORE] Rehydrated %d candles for %d symbols", total, len(result))
         
         return result
+
+    def list_symbols(self) -> List[str]:
+        """List symbols with stored candles."""
+        try:
+            symbols: List[str] = []
+            for symbol_dir in self.base_dir.iterdir():
+                if symbol_dir.is_dir():
+                    symbols.append(symbol_dir.name)
+            symbols.sort()
+            return symbols
+        except Exception:
+            return []
     
     def cleanup_old_files(self, max_age_days: int = 7):
         """Remove old candle files to save disk space."""
@@ -267,6 +424,33 @@ class CandleStore:
         
         if removed:
             logger.info("[STORE] Cleaned up %d old candle files", removed)
+
+    def get_last_candle_ts(self, symbol: str, tf: str) -> Optional[datetime]:
+        """Read the most recent candle timestamp from storage (fast tail read)."""
+        file_path = self._get_file_path(symbol, tf)
+        if not file_path.exists():
+            return None
+
+        try:
+            with open(file_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                if size == 0:
+                    return None
+                # Read the last chunk and extract the last non-empty line.
+                chunk_size = min(size, 4096)
+                f.seek(-chunk_size, os.SEEK_END)
+                data = f.read(chunk_size).decode("utf-8", errors="ignore")
+            lines = [line for line in data.splitlines() if line.strip()]
+            if not lines:
+                return None
+            last_line = lines[-1]
+            payload = json.loads(last_line)
+            stored = StoredCandle(**payload)
+            return stored.to_candle().timestamp
+        except Exception as e:
+            logger.debug("[STORE] Tail read failed %s/%s: %s", symbol, tf, e)
+            return None
     
     def get_stats(self) -> dict:
         """Get storage statistics."""

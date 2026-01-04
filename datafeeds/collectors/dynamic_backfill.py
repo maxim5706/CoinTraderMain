@@ -169,10 +169,17 @@ class DynamicBackfill:
                 self.fetch_candles, symbol, 300, 60
             )
             
-            # Skip higher timeframe candles to reduce API load
-            # These are nice-to-have but not critical for trading
-            candles_1h = []
-            candles_1d = []
+            # Fetch 1H candles (48 hours lookback) for trend indicators
+            await asyncio.sleep(0.3)
+            candles_1h = await asyncio.to_thread(
+                self.fetch_candles, symbol, 3600, 48  # 1 hour = 3600 seconds
+            )
+            
+            # Fetch 1D candles (30 days lookback) for daily trend
+            await asyncio.sleep(0.3)
+            candles_1d = await asyncio.to_thread(
+                self.fetch_candles, symbol, 86400, 30  # 1 day = 86400 seconds
+            )
             
             job.candles_1m = len(candles_1m) if candles_1m else 0
             job.candles_5m = len(candles_5m) if candles_5m else 0

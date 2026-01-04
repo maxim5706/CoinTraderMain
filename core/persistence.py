@@ -1,12 +1,14 @@
 """Position persistence facade that delegates to mode-specific backends."""
 
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Optional
 
 from core.logging_utils import get_logger
 from core.mode_config import ConfigurationManager
 from core.mode_configs import TradingMode
 from core.models import Position, PositionState, Side
+from core.asset_class import get_risk_profile
 from core.paper_persistence import PaperPositionPersistence
 from core.live_persistence import LivePositionPersistence
 
@@ -15,6 +17,11 @@ logger = get_logger(__name__)
 
 def _get_backend(mode: Optional[TradingMode] = None):
     resolved_mode = mode or ConfigurationManager.get_trading_mode()
+    return _get_backend_cached(resolved_mode)
+
+
+@lru_cache(maxsize=2)
+def _get_backend_cached(resolved_mode: TradingMode):
     if resolved_mode == TradingMode.PAPER:
         return PaperPositionPersistence()
     return LivePositionPersistence()
@@ -156,6 +163,13 @@ def sync_with_exchange(
                 )
                 entry_price = current_price_per_unit
             
+            # Derive a reasonable time stop for synced holdings so they can't hang forever.
+            try:
+                risk_profile = get_risk_profile(symbol)
+                time_stop_min = int(risk_profile.max_hold_hours * 60)
+            except Exception:
+                time_stop_min = int(getattr(settings, "max_hold_minutes", 120) or 120)
+
             # SELF-HEALING: Detect underwater synced positions
             # If current price is significantly below entry, the stop would trigger immediately
             # Instead, set a REALISTIC stop based on current price to give position room to recover
@@ -193,6 +207,7 @@ def sync_with_exchange(
                 stop_price=stop_price,
                 tp1_price=tp1_price,
                 tp2_price=tp2_price,
+                time_stop_min=time_stop_min,
                 state=PositionState.OPEN,
                 strategy_id=strategy_id,
                 entry_cost_usd=cost_basis,
@@ -243,10 +258,44 @@ def sync_with_exchange(
         
         # Apply reconciliation
         added = 0
-        for symbol, pos in real_holdings.items():
+        updated = 0
+        for symbol, exchange_pos in real_holdings.items():
             if symbol not in positions:
-                positions[symbol] = pos
+                # New position from exchange - add it
+                positions[symbol] = exchange_pos
                 added += 1
+            else:
+                # Matched position - PRESERVE local metadata, update exchange data
+                local_pos = positions[symbol]
+                
+                # Preserve these from local (they don't exist on exchange)
+                exchange_pos.strategy_id = local_pos.strategy_id or exchange_pos.strategy_id
+                exchange_pos.tier = getattr(local_pos, "tier", "normal")
+                exchange_pos.entry_score = getattr(local_pos, "entry_score", 0.0)
+                exchange_pos.flags = getattr(local_pos, "flags", "")
+                exchange_pos.source_strategy = getattr(local_pos, "source_strategy", "") or local_pos.strategy_id
+                exchange_pos.entry_confidence = local_pos.entry_confidence
+                exchange_pos.current_confidence = local_pos.current_confidence
+                exchange_pos.peak_confidence = local_pos.peak_confidence
+                exchange_pos.ml_score_entry = local_pos.ml_score_entry
+                exchange_pos.ml_score_current = local_pos.ml_score_current
+                exchange_pos.stack_count = getattr(local_pos, "stack_count", 0)
+                exchange_pos.stop_order_id = getattr(local_pos, "stop_order_id", None)
+                exchange_pos.entry_order_id = getattr(local_pos, "entry_order_id", None)
+                exchange_pos.last_modified = getattr(local_pos, "last_modified", None)
+                exchange_pos.last_stop_update = getattr(local_pos, "last_stop_update", None)
+                exchange_pos.entry_time = local_pos.entry_time  # Preserve original entry time
+                
+                # Keep local stop/TP if they were already set (don't overwrite trailing stops)
+                if local_pos.stop_price > 0:
+                    exchange_pos.stop_price = local_pos.stop_price
+                if local_pos.tp1_price > 0:
+                    exchange_pos.tp1_price = local_pos.tp1_price
+                if local_pos.tp2_price > 0:
+                    exchange_pos.tp2_price = local_pos.tp2_price
+                
+                positions[symbol] = exchange_pos
+                updated += 1
 
         removed = 0
         for symbol in list(positions.keys()):

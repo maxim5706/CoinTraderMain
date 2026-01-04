@@ -4,6 +4,7 @@ from core.models.candle import Candle, CandleBuffer
 from core.models.position import Position, PositionState, Side
 from core.models.signal import FlagPattern, ImpulseLeg, Signal, SignalType
 from core.models.trade_result import TradeResult
+from core.models.trade import Intent, OrderRequest, TradePlan
 
 __all__ = [
     "Candle",
@@ -15,6 +16,8 @@ __all__ = [
     "Side",
     "Signal",
     "SignalType",
+    "Intent",
+    "OrderRequest",
+    "TradePlan",
     "TradeResult",
 ]
-

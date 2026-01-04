@@ -3,9 +3,11 @@
 import logging
 from collections import defaultdict
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from core.state import BurstCandidate
+from core.logging_utils import should_emit
+from logic.predictive_ranker import predictive_ranker
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,7 @@ class ScannerManager:
         self.state = state
         self.scanner = scanner
         self.get_price = get_price_func
+        self._last_top3: str = ""
     
     def update_leaderboard(self, recent_signal_symbols: List[str] = None) -> List[BurstCandidate]:
         """
@@ -96,11 +99,20 @@ class ScannerManager:
             
             # Log summary
             if len(candidates) >= 3:
-                top3 = ", ".join([
-                    f"{c.symbol.replace('-USD', '')}(burst:{c.burst_score:.1f})" 
-                    for c in candidates[:3]
-                ])
-                logger.info("[SCANNER] Leaderboard: %s (total: %d)", top3, len(candidates))
+                top3_syms = [c.symbol.replace('-USD', '') for c in candidates[:3]]
+                top3 = ", ".join(
+                    [f"{sym}(burst:{candidates[i].burst_score:.1f})" for i, sym in enumerate(top3_syms)]
+                )
+                top3_key = ",".join(top3_syms)
+                if top3_key != self._last_top3:
+                    # If the top3 keeps flipping rapidly, don't allow infinite distinct keys to spam logs.
+                    if should_emit("scanner_leaderboard_change", 10.0):
+                        logger.info("[SCANNER] Leaderboard: %s (total: %d)", top3, len(candidates))
+                        self._last_top3 = top3_key
+                else:
+                    # Same top3: emit occasionally.
+                    if should_emit(f"scanner_leaderboard:{top3_key}", 60.0):
+                        logger.info("[SCANNER] Leaderboard: %s (total: %d)", top3, len(candidates))
             
             # Update state
             self.state.burst_leaderboard = candidates[:15]
@@ -226,7 +238,7 @@ class ScannerManager:
         
         try:
             from core.candle_store import candle_store
-            warm_symbols = candle_store.list_symbols()
+            warm_symbols = candle_store.list_symbols() if hasattr(candle_store, "list_symbols") else []
             
             for symbol in warm_symbols[:limit]:
                 info = self.scanner.universe.get(symbol)
@@ -251,3 +263,56 @@ class ScannerManager:
             logger.warning("[SCANNER] Failed to get warm symbols: %s", e)
         
         return candidates
+    
+    def update_predictive_ranker(self, get_buffer_func) -> dict:
+        """
+        Feed all warm symbols to the predictive ranker for MTF analysis.
+        
+        Args:
+            get_buffer_func: Function to get candle buffer for a symbol
+            
+        Returns:
+            Status dict with ranker info
+        """
+        try:
+            from core.candle_store import candle_store
+            symbols = candle_store.list_symbols() if hasattr(candle_store, "list_symbols") else []
+            
+            updated = 0
+            for symbol in symbols[:50]:  # Limit to top 50 for performance
+                buffer = get_buffer_func(symbol)
+                if buffer:
+                    mtf = predictive_ranker.update_from_buffer(symbol, buffer)
+                    if mtf:
+                        updated += 1
+            
+            # Get actionable plays
+            actionable = predictive_ranker.get_actionable_plays()
+            top_plays = predictive_ranker.get_top_predictions(5)
+            
+            if actionable:
+                logger.info("[PREDICT] %d actionable plays: %s",
+                           len(actionable),
+                           ", ".join(f"{p.symbol}({p.confidence:.0f}%)" for p in actionable[:3]))
+            
+            return {
+                "updated": updated,
+                "actionable": len(actionable),
+                "top_plays": [(p.symbol, p.confidence, p.direction) for p in top_plays],
+            }
+            
+        except Exception as e:
+            logger.warning("[PREDICT] Error updating ranker: %s", e)
+            return {"updated": 0, "actionable": 0, "error": str(e)}
+    
+    def get_predictive_ranking(self, symbols: List[str]) -> List[tuple]:
+        """
+        Get predictive ranking for a list of symbols.
+        
+        Returns: List of (symbol, score, reason) sorted by attractiveness
+        """
+        return predictive_ranker.rank_for_entry(symbols)
+    
+    def should_wait_entry(self, symbol: str) -> tuple:
+        """Check if we should wait before entering this symbol."""
+        return predictive_ranker.should_wait_for_entry(symbol)

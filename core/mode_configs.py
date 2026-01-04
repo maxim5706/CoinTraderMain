@@ -37,6 +37,7 @@ class BaseTradingConfig:
     vol_spike_threshold: float = 1.5
     range_spike_threshold: float = 1.2
     ml_min_confidence: float = 0.55
+    spread_max_bps: float = 50.0  # Max spread in basis points for entry
     
     # Feature flags
     fast_mode_enabled: bool = False
@@ -109,23 +110,25 @@ class PaperModeConfig(BaseTradingConfig):
 
 @dataclass
 class LiveModeConfig(BaseTradingConfig):
-    """Live trading - Conservative and proven."""
+    """Live trading - Conservative for $600 account."""
     api_key: str = ""
     api_secret: str = ""
     use_limit_orders: bool = True
     limit_buffer_pct: float = 0.003
     
-    # Conservative risk for real money
-    portfolio_max_exposure_pct: float = 0.40  # Lower than paper
-    max_positions: int = 8  # Fewer positions, more focus
+    # Conservative risk for small accounts
+    # Key: 0.5-1% risk per trade, 30-40% max exposure, 2-3 positions
+    portfolio_max_exposure_pct: float = 0.35  # 35% max exposure (conservative)
+    max_positions: int = 50                    # No hard cap - exposure % is the real limit
+    risk_per_trade_pct: float = 0.01           # 1% risk per trade
     
-    # Wider stops to account for slippage/volatility
-    fixed_stop_pct: float = 0.035  # 3.5% - proven level  
-    min_rr_ratio: float = 1.8  # Higher requirement for real trades
+    # Structure-based stops with 1.5-2.5 R:R target
+    fixed_stop_pct: float = 0.03   # 3% default stop
+    min_rr_ratio: float = 1.5      # Minimum 1.5 R:R required
     
-    # Longer holds for better fills
-    max_hold_minutes: int = 180  # More patient
-    fast_mode_enabled: bool = False  # Stick to proven strategies
+    # Let trades develop
+    max_hold_minutes: int = 240    # 4 hours max hold
+    fast_mode_enabled: bool = True
     
     # Higher confidence for real money
     ml_min_confidence: float = 0.65
@@ -140,6 +143,6 @@ class LiveModeConfig(BaseTradingConfig):
     bf_vol_ratio_strong: float = 3.5        # Require stronger volume (3.5x vs 3x)
     
     # Live mode: Conservative position management
-    dust_threshold_usd: float = 1.00        # Higher dust threshold (avoid micro positions)
-    max_positions_per_strategy: int = 2     # Fewer positions per strategy for focus
-    min_hold_seconds: int = 60              # Longer minimum hold for stability
+    dust_threshold_usd: float = 1.00        # Higher dust threshold
+    max_positions_per_strategy: int = 1     # Max 1 position per strategy
+    min_hold_seconds: int = 60              # Minimum hold for stability

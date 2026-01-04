@@ -1,0 +1,23 @@
+{
+  "AERGO-USD": {
+    "symbol": "AERGO-USD",
+    "side": "buy",
+    "entry_price": 0.06761210445938287,
+    "entry_time": "2025-12-20T00:13:50.289105+00:00",
+    "size_usd": 10.0,
+    "size_qty": 147.9025106518815,
+    "stop_price": 0.06591,
+    "tp1_price": 0.072332,
+    "tp2_price": 0.07436,
+    "time_stop_min": 120,
+    "state": "open",
+    "strategy_id": "paper",
+    "realized_pnl": 0.0,
+    "partial_closed": false,
+    "entry_confidence": 0.0,
+    "current_confidence": 0.0,
+    "peak_confidence": 0.0,
+    "ml_score_entry": 0.0,
+    "ml_score_current": 0.0
+  }
+}

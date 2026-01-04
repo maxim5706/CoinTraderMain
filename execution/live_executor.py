@@ -47,6 +47,16 @@ class LiveExecutor(IExecutor):
             return False, "Insufficient balance"
         return True, "OK"
 
+    def update_config(self, config: LiveModeConfig) -> None:
+        """Update runtime config and pass through to dependencies."""
+        self.config = config
+        if hasattr(self.portfolio, "update_config"):
+            self.portfolio.update_config(config)
+        elif hasattr(self.portfolio, "config"):
+            self.portfolio.config = config
+        if hasattr(self.stop_manager, "config"):
+            self.stop_manager.config = config
+
     async def open_position(
         self,
         symbol: str,
@@ -141,11 +151,11 @@ class LiveExecutor(IExecutor):
                     logger.warning("[LIVE] Retry %s/%s: %s", attempt + 1, max_retries, e)
                     await asyncio.sleep(delay)
 
-        if result is None or not result.success or result.fill_qty <= 0:
+        # Check for failed result - handle None fill_qty explicitly
+        fill_qty = float(result.fill_qty) if result is not None and result.fill_qty is not None else 0.0
+        if result is None or not result.success or fill_qty <= 0:
             logger.error("[LIVE] Failed after %s attempts: %s", max_retries, last_error)
             return None
-
-        fill_qty = result.fill_qty or 0.0
         fill_price = result.fill_price or price
 
         # Adjust stops/targets relative to actual fill
@@ -163,6 +173,16 @@ class LiveExecutor(IExecutor):
         entry_conf = getattr(intelligence, "_last_entry_confidence", 0.0) or 0.0
         ml_result = intelligence.get_live_ml(symbol)
         ml_score = ml_result.raw_score if ml_result and not ml_result.is_stale() else 0.0
+
+        # Determine tier based on entry confidence/sizing
+        if entry_conf >= 85:
+            tier = "whale"
+        elif entry_conf >= 70:
+            tier = "strong"
+        elif entry_conf >= 50:
+            tier = "normal"
+        else:
+            tier = "scout"
 
         return Position(
             symbol=symbol,
@@ -183,6 +203,10 @@ class LiveExecutor(IExecutor):
             peak_confidence=entry_conf,
             ml_score_entry=ml_score,
             ml_score_current=ml_score,
+            tier=tier,
+            entry_score=entry_conf,
+            source_strategy="live",
+            stop_order_id=stop_id,
         )
 
     async def close_position(self, position: Position, price: float, reason: str) -> TradeResult:
@@ -194,22 +218,78 @@ class LiveExecutor(IExecutor):
         self.stop_manager.cancel_stop_order(position.symbol)
         # Get portfolio UUID
         portfolio_uuid = getattr(self.portfolio, '_portfolio_uuid', None)
-        order = client.market_order_sell(
-            client_order_id=f"ct_sell_{position.symbol}_{int(datetime.now().timestamp())}",
-            product_id=position.symbol,
-            base_size=str(position.size_qty),
-            retail_portfolio_id=portfolio_uuid,
-        )
+        
+        # Get ACTUAL balance from exchange to avoid dust
+        actual_qty = position.size_qty
+        try:
+            asset = position.symbol.split("-")[0]
+            accounts = client.get_accounts()
+            for acc in getattr(accounts, 'accounts', []):
+                if getattr(acc, 'currency', '') == asset:
+                    available = float(getattr(acc, 'available_balance', {}).get('value', 0) or 0)
+                    if available > 0:
+                        actual_qty = available  # Sell ALL of it, no dust
+                        logger.info("[LIVE] Selling actual balance: %s %s (tracked: %s)", 
+                                   actual_qty, asset, position.size_qty)
+                    break
+        except Exception as e:
+            logger.warning("[LIVE] Could not fetch actual balance, using tracked qty: %s", e)
+        
+        # Use limit sell for lower fees (0.6% vs 1.2%), unless urgent stop
+        use_limit_exit = self.config.use_limit_orders and reason not in ("stop", "emergency")
+        
+        if use_limit_exit:
+            # Sell slightly below market for quick fill but maker fee
+            limit_price = price * (1 - self.config.limit_buffer_pct)
+            product_info = self.portfolio.get_product_info(position.symbol) if self.portfolio else {}
+            price_inc = float(product_info.get('price_increment', 0.01) or 0.01)
+            base_inc = float(product_info.get('base_increment', 0.0001) or 0.0001)
+            import math
+            price_decimals = max(0, -int(math.log10(price_inc))) if price_inc > 0 else 2
+            base_decimals = max(0, -int(math.log10(base_inc))) if base_inc > 0 else 8
+            limit_price = round(limit_price, price_decimals)
+            # Round DOWN to avoid "insufficient funds" - sell what we actually have
+            sell_qty = math.floor(actual_qty / base_inc) * base_inc
+            base_str = f"{sell_qty:.{base_decimals}f}".rstrip('0').rstrip('.')
+            price_str = f"{limit_price:.8f}".rstrip('0').rstrip('.')
+            
+            logger.info("[LIVE] Limit SELL %s: qty=%s price=%s (reason=%s)", 
+                       position.symbol, base_str, price_str, reason)
+            order = client.limit_order_gtc_sell(
+                client_order_id=f"ct_sell_{position.symbol}_{int(datetime.now().timestamp())}",
+                product_id=position.symbol,
+                base_size=base_str,
+                limit_price=price_str,
+                retail_portfolio_id=portfolio_uuid,
+            )
+        else:
+            # Market sell for stops/emergencies - guaranteed fill, sell ALL
+            product_info = self.portfolio.get_product_info(position.symbol) if self.portfolio else {}
+            base_inc = float(product_info.get('base_increment', 0.0001) or 0.0001)
+            import math
+            base_decimals = max(0, -int(math.log10(base_inc))) if base_inc > 0 else 8
+            sell_qty = math.floor(actual_qty / base_inc) * base_inc
+            base_str = f"{sell_qty:.{base_decimals}f}".rstrip('0').rstrip('.')
+            
+            logger.info("[LIVE] Market SELL %s: qty=%s (reason=%s)", 
+                       position.symbol, base_str, reason)
+            order = client.market_order_sell(
+                client_order_id=f"ct_sell_{position.symbol}_{int(datetime.now().timestamp())}",
+                product_id=position.symbol,
+                base_size=base_str,
+                retail_portfolio_id=portfolio_uuid,
+            )
         success = getattr(order, "success", None) or (order.get("success") if isinstance(order, dict) else True)
         if not success:
             logger.error("[LIVE] Sell order failed: %s", order)
 
         gross_pnl = (price - position.entry_price) * position.size_qty + position.realized_pnl
         entry_fee_rate = 0.006 if self.config.use_limit_orders else 0.012
+        exit_fee_rate = 0.006 if use_limit_exit else 0.012  # Limit exit = lower fee
         entry_fee = position.entry_price * position.size_qty * entry_fee_rate
-        exit_fee = price * position.size_qty * 0.012
+        exit_fee = price * position.size_qty * exit_fee_rate
         pnl = gross_pnl - (entry_fee + exit_fee)
-        pnl_pct = ((price / position.entry_price) - 1) * 100 - ((entry_fee_rate + 0.012) * 100)
+        pnl_pct = ((price / position.entry_price) - 1) * 100 - ((entry_fee_rate + exit_fee_rate) * 100)
 
         return TradeResult(
             symbol=position.symbol,
@@ -222,4 +302,5 @@ class LiveExecutor(IExecutor):
             pnl=pnl,
             pnl_pct=pnl_pct,
             exit_reason=reason,
+            strategy_id=getattr(position, 'strategy_id', '') or '',
         )

@@ -2,19 +2,95 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import threading
 import time
+from datetime import datetime, timezone
+
+from core.mode_paths import get_logs_dir
 
 LOG_FORMAT = "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 _HANDLER_NAME = "cointrader-root-handler"
+_EVENTS_HANDLER_NAME = "cointrader-events-handler"
 
 # Global flag to suppress console output when TUI is active
 _console_suppressed = False
 
 
 _saved_handlers = []
+
+_emit_lock = threading.Lock()
+_last_emit_by_key: dict[str, float] = {}
+
+
+def should_emit(key: str, interval_seconds: float) -> bool:
+    now = time.monotonic()
+    try:
+        interval = float(interval_seconds)
+    except Exception:
+        interval = 0.0
+    if interval <= 0:
+        return True
+    with _emit_lock:
+        last = _last_emit_by_key.get(key)
+        if last is not None and (now - last) < interval:
+            return False
+        _last_emit_by_key[key] = now
+        return True
+
+
+def _utc_iso(ts: datetime | None = None) -> str:
+    dt = ts or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _events_log_path(ts: datetime | None = None):
+    dt = ts or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    date_str = dt.strftime("%Y-%m-%d")
+    return get_logs_dir() / f"events_{date_str}.jsonl"
+
+
+class JsonlEventsHandler(logging.Handler):
+    def __init__(self, level: int = logging.WARNING):
+        super().__init__(level=level)
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            if record.levelno < self.level:
+                return
+            evt = {
+                "ts": _utc_iso(datetime.now(timezone.utc)),
+                "level": record.levelname,
+                "logger": record.name,
+                "msg": record.getMessage(),
+                "module": record.module,
+                "func": record.funcName,
+                "line": record.lineno,
+            }
+            if record.exc_info:
+                try:
+                    import traceback
+
+                    evt["exc"] = "".join(traceback.format_exception(*record.exc_info)).strip()
+                except Exception:
+                    evt["exc"] = "<exc_info unavailable>"
+
+            path = _events_log_path(datetime.now(timezone.utc))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(evt, separators=(",", ":"), default=str) + "\n"
+            with self._lock:
+                with open(path, "a") as f:
+                    f.write(line)
+        except Exception:
+            return
 
 def suppress_console_logging(suppress: bool = True):
     """Suppress ALL console logging (for TUI mode). File logging continues."""
@@ -79,6 +155,12 @@ def setup_logging(level: str | int | None = None) -> logging.Logger:
         formatter.converter = time.gmtime  # Force UTC timestamps
         handler.setFormatter(formatter)
         root.addHandler(handler)
+
+    has_events_handler = any(getattr(h, "name", "") == _EVENTS_HANDLER_NAME for h in root.handlers)
+    if not has_events_handler:
+        events_handler = JsonlEventsHandler(level=logging.WARNING)
+        events_handler.name = _EVENTS_HANDLER_NAME
+        root.addHandler(events_handler)
 
     root.setLevel(resolved_level)
     for handler in root.handlers:

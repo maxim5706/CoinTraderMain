@@ -19,4 +19,5 @@ class TradeResult:
     pnl: float
     pnl_pct: float
     exit_reason: str  # "stop", "tp1", "tp2", "time_stop"
+    strategy_id: str = ""  # Source strategy for per-strategy tracking
 

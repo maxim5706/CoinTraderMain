@@ -21,6 +21,15 @@ class PositionState(Enum):
     CLOSING = "closing"
 
 
+class PositionTier(Enum):
+    """Position sizing tier - determines behavior and roll-up eligibility."""
+    SCOUT = "scout"      # Small probe position, learning
+    NORMAL = "normal"    # Standard position
+    STRONG = "strong"    # High-conviction position
+    WHALE = "whale"      # Maximum conviction, best setup
+    RECOVERED = "recovered"  # Synced from exchange, unknown tier
+
+
 @dataclass
 class Position:
     """Open position tracking with play-based confidence."""
@@ -51,6 +60,23 @@ class Position:
     highest_price: float = 0.0      # Highest price seen since entry
     trailing_stop_pct: float = 0.0  # Trailing stop % (0 = disabled)
     trailing_active: bool = False   # Is trailing stop active?
+    
+    # Stacking (adding to winners)
+    stack_count: int = 0            # Number of times added to position
+    
+    # Order tracking (persisted for recovery)
+    stop_order_id: Optional[str] = None   # Exchange stop order ID
+    entry_order_id: Optional[str] = None  # Exchange entry order ID
+    
+    # Timestamps for persistence and reconciliation
+    last_modified: Optional[datetime] = None  # Last time position was updated
+    last_stop_update: Optional[datetime] = None  # Last time stop was modified
+    
+    # Position tagging for strategy and behavior control
+    tier: str = "normal"            # scout/normal/strong/whale/recovered
+    entry_score: float = 0.0        # Score at entry (0-100) for roll-up decisions
+    flags: str = ""                 # Comma-separated flags: "no_sell,stack_candidate,trailing_active"
+    source_strategy: str = ""       # Original strategy that created this position (preserved across restarts)
     
     def __post_init__(self):
         """Validate position data after creation."""

@@ -9,7 +9,15 @@ from datetime import datetime, timezone
 from typing import List, Optional, TYPE_CHECKING
 
 from core.config import settings
+from core.models import Intent
 from core.logging_utils import get_logger
+
+# Brain integration
+try:
+    from logic.ollama_brain import brain, BrainDecision
+    BRAIN_ENABLED = True
+except ImportError:
+    BRAIN_ENABLED = False
 
 if TYPE_CHECKING:
     from core.models import Signal
@@ -211,8 +219,41 @@ async def process_signal_batch(
             logger.debug("[BATCH] Skipping %s - already have position", ranked.symbol)
             continue
         
+        # AI Brain evaluation (optional boost/veto)
+        brain_approved = True
+        brain_size_mult = 1.0
+        if BRAIN_ENABLED:
+            try:
+                decision = await brain.evaluate_signal(
+                    symbol=ranked.symbol,
+                    strategy=getattr(ranked.signal, 'strategy', 'unknown'),
+                    score=ranked.score,
+                    price=ranked.features.get('price', 0),
+                    trend_1m=ranked.features.get('trend_1m', 0),
+                    trend_5m=ranked.features.get('trend_5m', 0),
+                    trend_1h=ranked.momentum_1h,
+                    rsi=ranked.features.get('rsi', 50),
+                    volume_spike=ranked.volume_spike,
+                    btc_trend=ranked.features.get('btc_trend', 0),
+                    portfolio_value=ranked.features.get('portfolio_value', 500),
+                    available_cash=ranked.features.get('available_cash', 100),
+                )
+                if decision.action == "skip" and decision.confidence > 70:
+                    logger.info("[BRAIN] ⛔ %s vetoed: %s (conf:%.0f%%)",
+                               ranked.symbol, decision.reasoning, decision.confidence)
+                    brain_approved = False
+                elif decision.action == "buy":
+                    brain_size_mult = decision.suggested_size_pct / 100.0
+                    logger.info("[BRAIN] ✓ %s approved: %s (size:%.0f%%)",
+                               ranked.symbol, decision.reasoning, decision.suggested_size_pct)
+            except Exception as e:
+                logger.debug("[BRAIN] Eval failed for %s: %s", ranked.symbol, e)
+        
+        if not brain_approved:
+            continue
+        
         try:
-            position = await open_position_func(ranked.signal)
+            position = await open_position_func(Intent.from_signal(ranked.signal))
             if position:
                 opened += 1
                 logger.info("[BATCH] ✓ Opened %s (#%d of %d)", ranked.symbol, opened, to_open)

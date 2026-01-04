@@ -3,288 +3,766 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CoinTrader Terminal</title>
+    <title>MAXXR Trader</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        /* =========================
+           DESIGN SYSTEM v2 - Production Polish
+           ========================= */
+        
+        /* ----- 0) Design Tokens ----- */
         :root {
-            --bg-primary: #0d1117;
-            --bg-secondary: #161b22;
-            --bg-tertiary: #21262d;
-            --border: #30363d;
-            --text-primary: #c9d1d9;
-            --text-secondary: #8b949e;
-            --text-muted: #6e7681;
-            --green: #3fb950;
-            --red: #f85149;
-            --yellow: #d29922;
-            --blue: #58a6ff;
+            /* Backgrounds - subtle, layered */
+            --bg-base: #080b13;
+            --bg-surface: rgba(255, 255, 255, 0.025);
+            --bg-elevated: rgba(255, 255, 255, 0.04);
+            --bg-hover: rgba(255, 255, 255, 0.055);
+            
+            /* Borders - barely visible */
+            --border-subtle: rgba(255, 255, 255, 0.06);
+            --border-default: rgba(255, 255, 255, 0.08);
+            
+            /* Typography - 4-tier system */
+            --text-display: rgba(255, 255, 255, 0.95);
+            --text-primary: rgba(255, 255, 255, 0.82);
+            --text-label: rgba(255, 255, 255, 0.48);
+            --text-meta: rgba(255, 255, 255, 0.32);
+            
+            /* Semantic colors - restrained */
+            --c-positive: #34d399;
+            --c-negative: #f87171;
+            --c-warning: #fbbf24;
+            --c-info: rgba(96, 165, 250, 0.8);
+            
+            /* Spacing scale (8px base) */
+            --sp-1: 4px;
+            --sp-2: 8px;
+            --sp-3: 12px;
+            --sp-4: 16px;
+            --sp-5: 20px;
+            --sp-6: 24px;
+            --sp-8: 32px;
+            --sp-10: 40px;
+            
+            /* Unified card system */
+            --radius: 12px;
+            --card-padding: 20px;
+            --card-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            
+            /* Transitions */
+            --trans: 120ms ease;
         }
+
+        /* ----- 1) Base & Typography ----- */
         body {
-            background: var(--bg-primary);
+            background: var(--bg-base);
             color: var(--text-primary);
-            font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
             font-size: 13px;
+            line-height: 1.5;
+            letter-spacing: -0.01em;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
-        .tab-btn { 
-            padding: 8px 16px; 
+
+        /* Type scale */
+        .t-display {
+            font-size: 28px;
+            font-weight: 600;
+            color: var(--text-display);
+            letter-spacing: -0.025em;
+            line-height: 1.1;
+        }
+        .t-value {
+            font-size: 15px;
+            font-weight: 500;
+            color: var(--text-primary);
+            letter-spacing: -0.01em;
+        }
+        .t-label {
+            font-size: 11px;
+            font-weight: 500;
+            color: var(--text-label);
+            letter-spacing: 0.02em;
+            text-transform: uppercase;
+        }
+        .t-meta {
+            font-size: 11px;
+            color: var(--text-meta);
+        }
+
+        .mono {
+            font-family: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ----- 2) Layout Grid ----- */
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 0 var(--sp-6);
+        }
+        
+        .grid-main {
+            display: grid;
+            gap: var(--sp-5);
+        }
+
+        /* ----- 3) App Header ----- */
+        .app-header {
+            position: sticky;
+            top: 0;
+            z-index: 40;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--sp-3) 0;
+            margin-bottom: var(--sp-5);
+            background: rgba(8, 11, 19, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+        
+        .app-header.live-mode {
+            border-bottom-color: rgba(248, 113, 113, 0.3);
+        }
+
+        /* ----- 4) Cards (unified) ----- */
+        .card {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius);
+            padding: var(--card-padding);
+        }
+        
+        .card-flush {
+            background: var(--bg-surface);
+            border: 1px solid var(--border-subtle);
+            border-radius: var(--radius);
+        }
+
+        .panel-muted {
+            background: rgba(255,255,255,0.015);
+            border-radius: 8px;
+            padding: var(--sp-3) var(--sp-4);
+        }
+
+        /* ----- 5) Tabs ----- */
+        .tab-btn {
+            padding: var(--sp-2) var(--sp-4);
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-label);
             border-bottom: 2px solid transparent;
-            color: var(--text-secondary);
-            transition: all 0.15s;
+            transition: color var(--trans), border-color var(--trans);
         }
         .tab-btn:hover { color: var(--text-primary); }
-        .tab-btn.active { 
-            color: var(--text-primary); 
-            border-bottom-color: var(--blue);
+        .tab-btn.active {
+            color: var(--text-primary);
+            border-bottom-color: var(--c-info);
         }
+
         .tab-content { display: none; }
         .tab-content.active { display: block; }
-        table { width: 100%; border-collapse: collapse; }
-        th { 
-            text-align: left; 
-            padding: 8px 12px; 
-            color: var(--text-secondary);
-            font-weight: 500;
-            border-bottom: 1px solid var(--border);
+
+        /* ----- 6) Tables (enterprise polish) ----- */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-variant-numeric: tabular-nums;
+        }
+
+        th {
+            text-align: left;
+            padding: var(--sp-2) var(--sp-3);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-meta);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            border-bottom: 1px solid var(--border-subtle);
             white-space: nowrap;
         }
-        td { 
-            padding: 8px 12px; 
-            border-bottom: 1px solid var(--border);
+        th.text-right { text-align: right; }
+
+        td {
+            padding: var(--sp-2) var(--sp-3);
+            font-size: 12px;
+            color: var(--text-primary);
+            border-bottom: 1px solid rgba(255,255,255,0.03);
             white-space: nowrap;
         }
-        tr:hover { background: var(--bg-tertiary); }
-        .card {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: 6px;
+        td.text-right { text-align: right; }
+        td.num { 
+            text-align: right; 
+            font-variant-numeric: tabular-nums;
+            font-family: "SF Mono", ui-monospace, monospace;
         }
+
+        tr { transition: background var(--trans); }
+        tr:hover { background: var(--bg-hover); }
+        tbody tr:last-child td { border-bottom: none; }
+
+        /* ----- 7) Status tokens (unified) ----- */
         .status-dot {
-            width: 8px;
-            height: 8px;
+            width: 6px;
+            height: 6px;
             border-radius: 50%;
             display: inline-block;
+            flex-shrink: 0;
         }
-        .status-ok { background: var(--green); }
-        .status-warn { background: var(--yellow); }
-        .status-err { background: var(--red); }
-        .pnl-pos { color: var(--green); }
-        .pnl-neg { color: var(--red); }
-        .pnl-zero { color: var(--text-secondary); }
-        .mono { font-family: 'SF Mono', 'Consolas', monospace; }
+        .status-ok { background: var(--c-positive); }
+        .status-warn { background: var(--c-warning); }
+        .status-err { background: var(--c-negative); }
+        .status-muted { background: var(--text-meta); }
+
+        /* PnL colors - green for profit only */
+        .pnl-pos { color: var(--c-positive); }
+        .pnl-neg { color: var(--c-negative); }
+        .pnl-zero { color: var(--text-label); }
+
+        /* ----- 8) Buttons ----- */
         .btn {
-            padding: 6px 12px;
-            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: var(--sp-2);
+            padding: var(--sp-2) var(--sp-3);
+            font-size: 12px;
             font-weight: 500;
-            transition: all 0.15s;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            transition: all var(--trans);
+            user-select: none;
+            cursor: pointer;
         }
-        .btn-danger { background: #da3633; color: white; }
-        .btn-danger:hover { background: #f85149; }
-        .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
-        .btn-secondary:hover { background: #30363d; }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: var(--bg-primary); }
-        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        .btn:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            border-color: var(--border-default);
+        }
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-hover);
+        }
+
+        .btn-danger {
+            background: rgba(248, 113, 113, 0.15);
+            color: var(--c-negative);
+            border-color: rgba(248, 113, 113, 0.2);
+        }
+        .btn-danger:hover:not(:disabled) {
+            background: rgba(248, 113, 113, 0.25);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            color: var(--text-label);
+        }
+        .btn-ghost:hover:not(:disabled) {
+            color: var(--text-primary);
+            background: var(--bg-surface);
+        }
+
+        /* ----- 9) Scrollbars ----- */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { 
+            background: rgba(255,255,255,0.1); 
+            border-radius: 3px; 
+        }
+        ::-webkit-scrollbar-thumb:hover { 
+            background: rgba(255,255,255,0.15); 
+        }
+
+        .mobile-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+        /* ----- 10) Utility classes ----- */
+        .gap-1 { gap: var(--sp-1); }
+        .gap-2 { gap: var(--sp-2); }
+        .gap-3 { gap: var(--sp-3); }
+        .gap-4 { gap: var(--sp-4); }
+        .gap-5 { gap: var(--sp-5); }
+        
+        .text-display { color: var(--text-display); }
+        .text-primary { color: var(--text-primary); }
+        .text-label { color: var(--text-label); }
+        .text-meta { color: var(--text-meta); }
+
+        /* ----- 11) Responsive ----- */
+        @media (max-width: 768px) {
+            :root {
+                --card-padding: 16px;
+            }
+            body { font-size: 12px; }
+            .t-display { font-size: 24px; }
+            .app-header { flex-wrap: wrap; gap: var(--sp-2); }
+            .tab-btn { padding: var(--sp-1) var(--sp-3); font-size: 11px; }
+            th, td { padding: var(--sp-1) var(--sp-2); font-size: 11px; }
+            .hide-mobile { display: none !important; }
+            table { min-width: 600px; }
+        }
+
+        @media (max-width: 480px) {
+            body { font-size: 11px; }
+            .t-display { font-size: 22px; }
+            .tab-btn { padding: var(--sp-1) var(--sp-2); font-size: 10px; }
+            th, td { padding: var(--sp-1); font-size: 10px; }
+        }
     </style>
 </head>
 <body class="min-h-screen">
-    <div class="max-w-7xl mx-auto px-4 py-4">
+    <div class="max-w-7xl mx-auto px-4 py-6">
         
-        <!-- Header -->
-        <header class="flex items-center justify-between mb-4 pb-4 border-b border-gray-700">
-            <div class="flex items-center gap-4">
-                <h1 class="text-lg font-semibold">CoinTrader Terminal</h1>
-                <span id="mode-badge" class="px-2 py-0.5 text-xs rounded bg-green-800 text-green-200">LIVE</span>
-                <span id="profile-badge" class="px-2 py-0.5 text-xs rounded bg-gray-700 text-gray-300">prod</span>
-            </div>
-            <div class="flex items-center gap-6 text-sm">
+        <!-- Header - Clean, single focus -->
+        <header class="app-header">
+            <div class="flex items-center gap-4 w-full justify-between">
+                <div class="flex items-center gap-4">
+                    <h1 class="text-base font-semibold text-gray-200">MAXXR</h1>
+                    <div id="system-pill" class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-800/60 border border-gray-700/50"></div>
+                </div>
                 <div class="flex items-center gap-2">
-                    <span id="ws-dot" class="status-dot status-ok"></span>
-                    <span id="ws-status">Connected</span>
+                    <div id="mode-toggle" class="flex items-center bg-gray-800/40 rounded-lg p-0.5">
+                        <button id="mode-paper-btn" class="px-3 py-1 text-xs rounded transition-all">Paper</button>
+                        <button id="mode-live-btn" class="px-3 py-1 text-xs rounded transition-all">Live</button>
+                    </div>
+                    <button id="restart-btn" class="text-gray-500 hover:text-gray-300 text-xs px-2 py-1 transition-colors" title="Restart">↻</button>
+                    <button id="kill-btn" class="text-gray-600 hover:text-red-400 text-xs px-2 py-1 transition-colors border border-transparent hover:border-red-900/50 rounded" title="Emergency stop">⏹</button>
                 </div>
-                <div class="text-gray-500">
-                    <span id="last-update">--:--:--</span>
-                </div>
-                <button id="kill-btn" onclick="toggleKillSwitch()" class="btn btn-secondary">
-                    Kill Switch
-                </button>
             </div>
         </header>
 
-        <!-- Summary Bar -->
-        <div class="grid grid-cols-6 gap-4 mb-4">
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Portfolio</div>
-                <div id="portfolio-value" class="text-xl font-semibold">$0.00</div>
+
+        <!-- Health Strip - Flattened, RUNNING is primary -->
+        <div id="health-strip" class="mb-3">
+            <div class="flex items-center gap-3 text-sm">
+                <div class="flex items-center gap-2">
+                    <div id="health-dot" class="w-2 h-2 rounded-full bg-cyan-400"></div>
+                    <span id="health-status-label" class="font-medium text-gray-200">RUNNING</span>
+                </div>
+                <span class="text-gray-600">·</span>
+                <span id="health-sub" class="text-gray-500 text-xs">Updated 0s ago</span>
+                <span id="health-reason" class="text-xs text-yellow-400/70 hidden"></span>
             </div>
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Daily PnL</div>
-                <div id="daily-pnl" class="text-xl font-semibold">$0.00</div>
-            </div>
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Unrealized</div>
-                <div id="unrealized-pnl" class="text-xl font-semibold">$0.00</div>
-            </div>
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Win Rate</div>
-                <div id="win-rate" class="text-xl font-semibold">0%</div>
-            </div>
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Trades</div>
-                <div id="trades-count" class="text-xl font-semibold">0W / 0L</div>
-            </div>
-            <div class="card p-3">
-                <div class="text-xs text-gray-500 mb-1">Available</div>
-                <div id="available-budget" class="text-xl font-semibold">$0</div>
+            <div id="fixit-section" class="mt-2 hidden">
+                <code id="fixit-cmd" class="bg-gray-800/50 px-2 py-0.5 rounded text-xs text-gray-400">pm2 restart coin-back</code>
+                <span id="fixit-helper" class="text-xs text-gray-600 ml-2"></span>
             </div>
         </div>
 
-        <!-- Status Bar -->
-        <div class="card p-3 mb-4 flex items-center gap-6 text-sm">
-            <div>
-                <span class="text-gray-500">BTC Regime:</span>
-                <span id="btc-regime" class="ml-1 font-medium">normal</span>
+        <!-- Startup Banner - Minimal, collapses at 90% -->
+        <div id="startup-banner" class="hidden mb-3">
+            <div class="flex items-center gap-3 text-sm">
+                <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                <span id="startup-title" class="text-gray-400">Warming</span>
+                <div class="flex-1 bg-gray-800/50 rounded-full h-1 overflow-hidden max-w-[200px]">
+                    <div id="startup-bar" class="bg-cyan-500/70 h-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <span id="startup-progress" class="text-xs text-gray-500 font-mono">0%</span>
+                <span id="startup-detail" class="text-xs text-gray-600 hidden"></span>
             </div>
-            <div>
-                <span class="text-gray-500">Exposure:</span>
-                <span id="exposure-pct" class="ml-1 font-medium">0%</span>
+        </div>
+
+        <!-- Portfolio Hero (Robinhood-style) - JS rendered -->
+        <div id="portfolio-hero" class="card p-6 mb-4">
+            <div class="text-gray-500 text-center py-4">Loading portfolio...</div>
+        </div>
+        
+        <!-- Bot Performance Stats - JS rendered -->
+        <div id="stats-bar" class="mb-4">
+            <!-- Rendered by statsBar.js -->
+        </div>
+
+        <!-- Interactive Portfolio Chart with Trade Markers - JS rendered -->
+        <div class="card p-4 mb-4">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-sm font-medium">Portfolio Performance</span>
             </div>
-            <div>
-                <span class="text-gray-500">Positions:</span>
-                <span id="position-count" class="ml-1 font-medium">0</span>
+            <div id="portfolio-chart" style="min-height: 200px;">
+                <div class="text-gray-500 text-center py-8">Loading chart...</div>
             </div>
-            <div>
-                <span class="text-gray-500">Warm:</span>
-                <span id="warm-count" class="ml-1 font-medium">0</span>
+        </div>
+        
+        <!-- Why Not Trading + Trade Timeline (side by side) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+            <!-- Why Not Trading Panel -->
+            <div class="card p-4">
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="text-sm font-medium">Why Not Trading?</span>
+                    <span class="text-xs text-gray-500">(Decision Lens)</span>
+                </div>
+                <div id="why-not-trading">
+                    <div class="text-gray-500 text-sm">Analyzing...</div>
+                </div>
             </div>
-            <div>
-                <span class="text-gray-500">Streaming:</span>
-                <span id="streaming-count" class="ml-1 font-medium">0</span>
+            
+            <!-- Trade Timeline -->
+            <div class="card p-4">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-sm font-medium">Trade Timeline</span>
+                    <span class="text-xs text-gray-500">Recent events</span>
+                </div>
+                <div id="trade-timeline">
+                    <div class="text-gray-500 text-sm">Loading events...</div>
+                </div>
             </div>
-            <div class="ml-auto flex items-center gap-4">
-                <span class="text-gray-500">Heartbeats:</span>
-                <span id="hb-ws" class="status-dot status-err" title="WebSocket"></span>
-                <span id="hb-1m" class="status-dot status-err" title="1m Candles"></span>
-                <span id="hb-5m" class="status-dot status-err" title="5m Candles"></span>
-                <span id="hb-ml" class="status-dot status-err" title="ML"></span>
-                <span id="hb-router" class="status-dot status-err" title="Router"></span>
+        </div>
+
+        <!-- System Status (simplified) -->
+        <div class="card p-2 mb-4 flex items-center justify-between text-xs">
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-2">
+                    <span class="text-gray-500">Streaming:</span>
+                    <span id="streaming-count" class="font-medium">0</span>
+                    <span class="text-gray-600">/</span>
+                    <span id="warm-count" class="font-medium">0</span>
+                    <span class="text-gray-500">warm</span>
+                </div>
+                <div class="flex items-center gap-3">
+                    <span class="flex items-center gap-1"><span id="hb-ws" class="status-dot status-err"></span><span id="hb-ws-label" class="text-gray-500">WS</span></span>
+                    <span class="flex items-center gap-1"><span id="hb-1m" class="status-dot status-err"></span><span id="hb-1m-label" class="text-gray-500">1m</span></span>
+                    <span class="flex items-center gap-1"><span id="hb-5m" class="status-dot status-err"></span><span id="hb-5m-label" class="text-gray-500">5m</span></span>
+                    <span class="flex items-center gap-1"><span id="hb-ml" class="status-dot status-err"></span><span id="hb-ml-label" class="text-gray-500">ML</span></span>
+                    <span class="flex items-center gap-1"><span id="hb-router" class="status-dot status-err"></span><span id="hb-router-label" class="text-gray-500">Orders</span></span>
+                </div>
             </div>
             <div id="kill-warning" class="hidden text-red-400 font-semibold">
                 KILL SWITCH ACTIVE
             </div>
         </div>
 
-        <!-- Tabs -->
-        <div class="border-b border-gray-700 mb-4">
-            <nav class="flex gap-1">
-                <button class="tab-btn active" data-tab="positions">Positions</button>
-                <button class="tab-btn" data-tab="signals">Signals</button>
-                <button class="tab-btn" data-tab="leaderboard">Leaderboard</button>
-                <button class="tab-btn" data-tab="engine">Engine</button>
-                <button class="tab-btn" data-tab="rejections">Rejections</button>
-            </nav>
-        </div>
-
-        <!-- Tab: Positions -->
-        <div id="tab-positions" class="tab-content active">
-            <div class="card overflow-hidden">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Side</th>
-                            <th>Entry</th>
-                            <th>Current</th>
-                            <th>Size</th>
-                            <th>PnL $</th>
-                            <th>PnL %</th>
-                            <th>Stop</th>
-                            <th>TP1</th>
-                            <th>Hold</th>
-                        </tr>
-                    </thead>
-                    <tbody id="positions-tbody">
-                        <tr><td colspan="10" class="text-center text-gray-500 py-8">No open positions</td></tr>
-                    </tbody>
-                </table>
+        <!-- Inline Activity Feed -->
+        <div class="card p-2 mb-4 text-xs">
+            <div class="flex items-center gap-2">
+                <span class="text-gray-500">Recent:</span>
+                <div id="activity-feed" class="flex items-center gap-3 overflow-x-auto">
+                    <span class="text-gray-600">Waiting for activity...</span>
+                </div>
             </div>
         </div>
 
-        <!-- Tab: Signals -->
-        <div id="tab-signals" class="tab-content">
-            <div class="card overflow-hidden">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Time</th>
-                            <th>Symbol</th>
-                            <th>Strategy</th>
-                            <th>Score</th>
-                            <th>Spread</th>
-                            <th>Status</th>
-                            <th>Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody id="signals-tbody">
-                        <tr><td colspan="7" class="text-center text-gray-500 py-8">No signals yet</td></tr>
-                    </tbody>
-                </table>
+        <div class="card p-3 mb-4">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-semibold text-gray-300">Decision Lens</span>
+                <span id="dl-window" class="text-xs text-gray-500">--</span>
+            </div>
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div class="bg-gray-900/30 rounded-xl p-3 border border-gray-800/60">
+                    <div class="text-xs text-gray-500">Take Rate</div>
+                    <div id="dl-take-rate" class="text-xl font-semibold">--</div>
+                    <div id="dl-take-rate-sub" class="text-xs text-gray-500">--</div>
+                </div>
+                <div class="bg-gray-900/30 rounded-xl p-3 border border-gray-800/60">
+                    <div class="text-xs text-gray-500">Top Blocks</div>
+                    <div id="dl-top-blocks" class="text-xs text-gray-300 whitespace-pre-line">--</div>
+                </div>
+                <div class="bg-gray-900/30 rounded-xl p-3 border border-gray-800/60">
+                    <div class="text-xs text-gray-500">Gate Mix (lifetime)</div>
+                    <div id="dl-gate-mix" class="text-xs text-gray-300 whitespace-pre-line">--</div>
+                </div>
+                <div class="bg-gray-900/30 rounded-xl p-3 border border-gray-800/60">
+                    <div class="text-xs text-gray-500">Repeat Offenders</div>
+                    <div id="dl-repeat" class="text-xs text-gray-300 whitespace-pre-line">--</div>
+                </div>
             </div>
         </div>
 
-        <!-- Tab: Leaderboard -->
-        <div id="tab-leaderboard" class="tab-content">
-            <div class="card overflow-hidden">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Rank</th>
-                            <th>Symbol</th>
-                            <th>Price</th>
-                            <th>Score</th>
-                            <th>Vol Spike</th>
-                            <th>Trend 5m</th>
-                            <th>Tier</th>
-                        </tr>
-                    </thead>
-                    <tbody id="leaderboard-tbody">
-                        <tr><td colspan="7" class="text-center text-gray-500 py-8">No data</td></tr>
-                    </tbody>
-                </table>
+        <!-- SECTION: Positions (JS-rendered Robinhood-style) -->
+        <div class="card p-4 mb-4">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-lg font-semibold text-white">Positions</span>
+            </div>
+            <div id="positions-table">
+                <div class="text-gray-500 text-center py-4">Loading positions...</div>
+            </div>
+        </div>
+        
+        
+        <!-- Bot Health & Diagnostics Drawer (JS-rendered, collapsed by default) -->
+        <div id="health-drawer" class="mb-4">
+            <!-- Will be rendered by healthDrawer.js -->
+        </div>
+
+        <!-- SECTION: Activity & Strategies (side by side) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-6">
+            <!-- Activity/Signals -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-gray-400">Recent Signals</span>
+                </div>
+                <div class="card overflow-hidden" style="max-height: 250px; overflow-y: auto;">
+                    <table class="text-xs">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Symbol</th>
+                                <th>Strategy</th>
+                                <th>Score</th>
+                                <th>Spread</th>
+                                <th>Status</th>
+                                <th>Reason</th>
+                            </tr>
+                        </thead>
+                        <tbody id="signals-tbody">
+                            <tr><td colspan="7" class="text-center text-gray-500 py-4">No signals yet</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <!-- Strategies -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-gray-400">Strategies</span>
+                    <button onclick="loadStrategies()" class="btn btn-secondary text-xs px-2 py-1">Refresh</button>
+                </div>
+                <div class="card overflow-hidden" style="max-height: 250px; overflow-y: auto;">
+                    <table class="text-xs">
+                        <thead>
+                            <tr>
+                                <th>Strategy</th>
+                                <th>On</th>
+                                <th>Pri</th>
+                                <th>Trades</th>
+                                <th>Win%</th>
+                                <th>P&L</th>
+                                <th>Avg</th>
+                            </tr>
+                        </thead>
+                        <tbody id="strategies-tbody">
+                            <tr><td colspan="7" class="text-center text-gray-500 py-4">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 
-        <!-- Tab: Engine -->
-        <div id="tab-engine" class="tab-content">
+        <!-- SECTION: Data Coverage & Entry Gates (Collapsible) -->
+        <details class="group mt-6">
+            <summary class="card p-3 cursor-pointer flex items-center justify-between hover:bg-gray-800/50 transition-colors">
+                <div class="flex items-center gap-3">
+                    <span class="text-gray-500 group-open:rotate-90 transition-transform">▶</span>
+                    <span class="text-sm font-semibold">Data Coverage & Entry Gates</span>
+                    <span id="coverage-summary" class="text-xs text-gray-500">--</span>
+                </div>
+                <span class="text-xs text-gray-500">Click to expand</span>
+            </summary>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
+                <!-- Data Coverage -->
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-semibold text-gray-400">Data Coverage</span>
+                    </div>
+                    <div class="card overflow-hidden mobile-scroll" style="max-height: 280px; overflow-y: auto;">
+                        <table class="text-xs">
+                            <thead>
+                                <tr>
+                                    <th class="text-left cursor-pointer" onclick="setCoverageSort('symbol')">Symbol</th>
+                                    <th class="text-center cursor-pointer" onclick="setCoverageSort('1m')">1m</th>
+                                    <th class="text-center cursor-pointer" onclick="setCoverageSort('5m')">5m</th>
+                                    <th class="text-center cursor-pointer" onclick="setCoverageSort('1h')">1h</th>
+                                    <th class="text-center cursor-pointer" onclick="setCoverageSort('1d')">1d</th>
+                                    <th class="text-center">Bars</th>
+                                    <th class="text-right cursor-pointer" onclick="setCoverageSort('spread')">Spread</th>
+                                    <th class="text-left">Reasons</th>
+                                </tr>
+                            </thead>
+                            <tbody id="coverage-tbody">
+                                <tr><td colspan="8" class="text-center text-gray-500 py-4">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Entry Gates -->
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-sm font-semibold text-gray-400">Entry Gates</span>
+                        <span id="gate-summary" class="text-xs text-gray-500">--</span>
+                    </div>
+                    <div class="card overflow-hidden" style="max-height: 280px; overflow-y: auto;">
+                        <table class="text-xs">
+                            <thead>
+                                <tr>
+                                    <th class="text-left">Symbol</th>
+                                    <th class="text-center">Decision</th>
+                                    <th class="text-left">Blocking Gate</th>
+                                    <th class="text-left">Reason</th>
+                                    <th class="text-right">Age</th>
+                                </tr>
+                            </thead>
+                            <tbody id="gate-trace-tbody">
+                                <tr><td colspan="5" class="text-center text-gray-500 py-4">No gate traces yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </details>
+
+        <!-- SECTION: Config & Diagnostics (Collapsible) -->
+        <details class="group mt-6">
+            <summary class="card p-3 cursor-pointer flex items-center justify-between hover:bg-gray-800/50 transition-colors">
+                <div class="flex items-center gap-3">
+                    <span class="text-gray-500 group-open:rotate-90 transition-transform">▶</span>
+                    <span class="text-sm font-semibold">Quick Config & Diagnostics</span>
+                </div>
+                <span class="text-xs text-gray-500">Click to expand</span>
+            </summary>
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-2">
+            <!-- Config -->
+            <div>
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-sm text-gray-400">Runtime Configuration</span>
+                <div class="flex gap-2">
+                    <button onclick="refreshConfig()" class="btn btn-secondary text-xs px-3 py-1">Reload</button>
+                    <button onclick="resetConfig()" class="btn btn-secondary text-xs px-3 py-1">Reset</button>
+                </div>
+            </div>
             <div class="grid grid-cols-2 gap-4">
+                <!-- Risk Controls -->
                 <div class="card p-4">
-                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Performance</h3>
-                    <table class="text-sm">
-                        <tr><td class="text-gray-500 pr-4 py-1">Uptime</td><td id="eng-uptime" class="font-medium">0h 0m</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Profit Factor</td><td id="eng-pf" class="font-medium">0.00</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Avg Win</td><td id="eng-avg-win" class="font-medium">$0.00</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Avg Loss</td><td id="eng-avg-loss" class="font-medium">$0.00</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Biggest Win</td><td id="eng-big-win" class="font-medium">$0.00</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Biggest Loss</td><td id="eng-big-loss" class="font-medium">$0.00</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Max Drawdown</td><td id="eng-dd" class="font-medium">$0.00</td></tr>
-                    </table>
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Risk Controls</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Max Exposure %</label>
+                            <input type="number" id="cfg-max-exposure" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="80">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Daily Loss Limit $</label>
+                            <input type="number" id="cfg-daily-loss" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="25">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Pause New Entries</label>
+                            <button id="cfg-pause-btn" onclick="togglePauseEntries()" class="px-3 py-1 rounded text-xs bg-gray-700">OFF</button>
+                        </div>
+                        <button onclick="saveRiskConfig()" class="btn btn-primary text-xs px-3 py-1 w-full mt-2">Save Risk Settings</button>
+                    </div>
                 </div>
+                <!-- Entry Filters -->
                 <div class="card p-4">
-                    <h3 class="text-sm font-semibold mb-3 text-gray-400">System</h3>
-                    <table class="text-sm">
-                        <tr><td class="text-gray-500 pr-4 py-1">REST Requests</td><td id="eng-rest" class="font-medium">0</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">REST 429s</td><td id="eng-429s" class="font-medium">0</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Ticks/5s</td><td id="eng-ticks" class="font-medium">0</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Candles/5s</td><td id="eng-candles" class="font-medium">0</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Candles Persisted</td><td id="eng-persisted" class="font-medium">0</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">ML Fresh %</td><td id="eng-ml-fresh" class="font-medium">0%</td></tr>
-                        <tr><td class="text-gray-500 pr-4 py-1">Vol Regime</td><td id="eng-vol" class="font-medium">normal</td></tr>
-                    </table>
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Entry Filters</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Min Entry Score</label>
+                            <input type="number" id="cfg-entry-score" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="40">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Max Spread (bps)</label>
+                            <input type="number" id="cfg-spread-max" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="50">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Min R:R Ratio</label>
+                            <input type="number" id="cfg-min-rr" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="1.5" step="0.1">
+                        </div>
+                        <button onclick="saveEntryConfig()" class="btn btn-primary text-xs px-3 py-1 w-full mt-2">Save Entry Settings</button>
+                    </div>
                 </div>
+                <!-- Position Sizing -->
+                <div class="card p-4">
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Position Sizing</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Whale Trade $</label>
+                            <input type="number" id="cfg-whale-usd" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="30">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Strong Trade $</label>
+                            <input type="number" id="cfg-strong-usd" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="15">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Normal Trade $</label>
+                            <input type="number" id="cfg-normal-usd" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="10">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Scout Trade $</label>
+                            <input type="number" id="cfg-scout-usd" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="5">
+                        </div>
+                        <button onclick="saveSizingConfig()" class="btn btn-primary text-xs px-3 py-1 w-full mt-2">Save Sizing Settings</button>
+                    </div>
+                </div>
+                <!-- Stop/TP Settings -->
+                <div class="card p-4">
+                    <h3 class="text-sm font-semibold mb-3 text-gray-400">Stops & Take Profits</h3>
+                    <div class="space-y-3">
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Fixed Stop %</label>
+                            <input type="number" id="cfg-stop-pct" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="3.5" step="0.5">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">TP1 %</label>
+                            <input type="number" id="cfg-tp1-pct" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="7">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">TP2 %</label>
+                            <input type="number" id="cfg-tp2-pct" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="10">
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <label class="text-sm">Max Hold (min)</label>
+                            <input type="number" id="cfg-max-hold" class="w-24 px-2 py-1 bg-gray-800 border border-gray-700 rounded text-sm" value="120">
+                        </div>
+                        <button onclick="saveStopsConfig()" class="btn btn-primary text-xs px-3 py-1 w-full mt-2">Save Stop Settings</button>
+                    </div>
+                </div>
+            </div>
+            <div class="card p-4 mt-4">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-gray-400">Config Snapshots</span>
+                    <button onclick="loadConfig()" class="btn btn-secondary text-xs px-3 py-1">Refresh</button>
+                </div>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-3 text-xs">
+                    <div>
+                        <div class="text-gray-500 mb-1">Start (boot)</div>
+                        <pre id="cfg-start-json" class="text-xs font-mono bg-gray-900/60 border border-gray-800 rounded p-2 overflow-auto" style="max-height: 160px;">--</pre>
+                    </div>
+                    <div>
+                        <div class="text-gray-500 mb-1">Running (live)</div>
+                        <pre id="cfg-running-json" class="text-xs font-mono bg-gray-900/60 border border-gray-800 rounded p-2 overflow-auto" style="max-height: 160px;">--</pre>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <div class="text-xs text-gray-500 mb-1">Differences</div>
+                    <div id="cfg-diff" class="text-xs"></div>
+                </div>
+                <div class="text-xs text-gray-500 mt-2">Last refreshed: <span id="cfg-last-refreshed">--</span></div>
             </div>
         </div>
 
-        <!-- Tab: Rejections -->
-        <div id="tab-rejections" class="tab-content">
+            <!-- Diagnostics -->
+            <div>
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-semibold text-gray-400">Diagnostics</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="card p-3">
+                        <table class="text-xs w-full">
+                            <tr><td class="text-gray-500 py-1">Uptime</td><td id="eng-uptime" class="text-right">0h 0m</td></tr>
+                            <tr><td class="text-gray-500 py-1">Profit Factor</td><td id="eng-pf" class="text-right">0.00</td></tr>
+                            <tr><td class="text-gray-500 py-1">Avg Win</td><td id="eng-avg-win" class="text-right">$0.00</td></tr>
+                            <tr><td class="text-gray-500 py-1">Avg Loss</td><td id="eng-avg-loss" class="text-right">$0.00</td></tr>
+                        </table>
+                    </div>
+                    <div class="card p-3">
+                        <table class="text-xs w-full">
+                            <tr><td class="text-gray-500 py-1">Biggest Win</td><td id="eng-big-win" class="text-right">$0.00</td></tr>
+                            <tr><td class="text-gray-500 py-1">Biggest Loss</td><td id="eng-big-loss" class="text-right">$0.00</td></tr>
+                            <tr><td class="text-gray-500 py-1">Max DD</td><td id="eng-dd" class="text-right">$0.00</td></tr>
+                            <tr><td class="text-gray-500 py-1">Vol Regime</td><td id="eng-vol" class="text-right">normal</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </details>
+
+        <!-- Hidden elements for compatibility -->
+        <div id="tab-rejections" class="hidden">
             <div class="card p-4">
                 <div class="grid grid-cols-6 gap-4 text-center">
                     <div>
@@ -315,46 +793,110 @@
             </div>
         </div>
 
+        <!-- Tab: Orders (History) -->
+        <div id="tab-orders" class="tab-content">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-4">
+                    <span class="text-sm text-gray-400">Order History (All Orders)</span>
+                    <select id="orders-filter" class="px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs">
+                        <option value="all">All Orders</option>
+                        <option value="bot">Bot Only</option>
+                        <option value="manual">Manual Only</option>
+                        <option value="buy">Buys Only</option>
+                        <option value="sell">Sells Only</option>
+                    </select>
+                </div>
+                <button onclick="loadOrderHistory()" class="btn btn-secondary text-xs px-3 py-1">Refresh</button>
+            </div>
+            <div class="card overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead>
+                        <tr class="text-gray-500 text-xs border-b border-gray-700">
+                            <th class="text-left p-2">Time</th>
+                            <th class="text-left p-2">Symbol</th>
+                            <th class="text-left p-2">Side</th>
+                            <th class="text-right p-2">Size</th>
+                            <th class="text-right p-2">Price</th>
+                            <th class="text-right p-2">Total</th>
+                            <th class="text-left p-2">Status</th>
+                            <th class="text-left p-2">Source</th>
+                        </tr>
+                    </thead>
+                    <tbody id="orders-tbody">
+                        <tr><td colspan="8" class="text-center text-gray-500 py-8">Loading orders...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Tab: AI Chat -->
+        <div id="tab-chat" class="tab-content">
+            <div class="flex items-center justify-between mb-3">
+                <span class="text-sm text-gray-400">AI Trading Assistant</span>
+                <div class="flex gap-2">
+                    <button onclick="askBot('thinking')" class="btn btn-secondary text-xs px-3 py-1">Bot Status</button>
+                    <button onclick="askBot('what should I do?')" class="btn btn-secondary text-xs px-3 py-1">Advice</button>
+                </div>
+            </div>
+            <div class="card p-4">
+                <div id="chat-messages" style="height: 300px; overflow-y: auto; margin-bottom: 12px;" class="space-y-3">
+                    <div class="text-gray-500 text-sm">Ask me anything about your trading bot, positions, or strategy.</div>
+                </div>
+                <div class="flex gap-2">
+                    <input type="text" id="chat-input" placeholder="Ask the bot..." 
+                           class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm"
+                           onkeypress="if(event.key==='Enter')sendChat()">
+                    <button onclick="sendChat()" class="btn btn-secondary px-4 py-2">Send</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
-        // Tab switching
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 btn.classList.add('active');
                 document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+                
+                if (btn.dataset.tab === 'strategies') loadStrategies();
+                if (btn.dataset.tab === 'config') loadConfig();
+                if (btn.dataset.tab === 'logs') loadLogs();
+                if (btn.dataset.tab === 'orders') loadOrderHistory();
             });
         });
 
-        // WebSocket connection
-        let ws = null;
-        let reconnectAttempts = 0;
+        let lastBotState = null;
+        let lastControlState = null;
+        let lastCoinbasePortfolio = null;
+        let lastCoverage = null;
+        let coverageSort = { key: 'symbol', dir: 'asc' };
 
-        function connect() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            
-            ws.onopen = () => {
-                reconnectAttempts = 0;
-                document.getElementById('ws-dot').className = 'status-dot status-ok';
-                document.getElementById('ws-status').textContent = 'Connected';
-            };
-            
-            ws.onmessage = (event) => {
-                updateUI(JSON.parse(event.data));
-            };
-            
-            ws.onclose = () => {
-                document.getElementById('ws-dot').className = 'status-dot status-err';
-                document.getElementById('ws-status').textContent = 'Disconnected';
-                if (reconnectAttempts < 10) {
-                    reconnectAttempts++;
-                    setTimeout(connect, 2000 * reconnectAttempts);
-                }
-            };
-        }
+        // Legacy position view switcher removed - now handled by positionsTable.js
+
+        let healthStatus = 'UNKNOWN';
+        let capabilities = { process_control: true, restart_instructions: {} };
+
+        const Api = {
+            async getJson(path) {
+                const resp = await fetch(path);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.json();
+            },
+            async postJson(path, body) {
+                const resp = await fetch(path, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: body ? JSON.stringify(body) : undefined,
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                return await resp.json();
+            }
+        };
+
+        // Transport handled by js/main.js module
 
         function formatMoney(v, decimals = 2) {
             return '$' + (parseFloat(v) || 0).toFixed(decimals);
@@ -370,46 +912,327 @@
             return n > 0 ? 'pnl-pos' : n < 0 ? 'pnl-neg' : 'pnl-zero';
         }
 
+        function formatAge(seconds) {
+            if (seconds === null || seconds === undefined) return '--';
+            const s = Math.max(0, Math.round(seconds));
+            if (s < 60) return `${s}s`;
+            const m = Math.round(s / 60);
+            if (m < 60) return `${m}m`;
+            const h = Math.round(m / 60);
+            if (h < 48) return `${h}h`;
+            const d = Math.round(h / 24);
+            return `${d}d`;
+        }
+
+        function computeFreshnessStatus(data) {
+            const ts = data.ts ? Date.parse(data.ts) : NaN;
+            const stateAge = isNaN(ts) ? 999 : Math.max(0, (Date.now() - ts) / 1000);
+            const hb = data.heartbeats || {};
+            const wsAge = hb.ws ?? 999;
+            const scanAge = hb.scanner ?? 999;
+            const routerAge = hb.order_router ?? 999;
+
+            let label = 'STALE';
+            let dot = 'status-err';
+            if (stateAge < 3 && wsAge < 5 && scanAge < 20 && routerAge < 20) {
+                label = 'OK';
+                dot = 'status-ok';
+            } else if (stateAge < 10 && wsAge < 15 && scanAge < 60 && routerAge < 60) {
+                label = 'DEGRADED';
+                dot = 'status-warn';
+            }
+
+            const detail = `age ${stateAge.toFixed(1)}s • ws ${formatAge(wsAge)} • scan ${formatAge(scanAge)} • router ${formatAge(routerAge)}`;
+            return { label, dot, detail, stateAge };
+        }
+
+        function updateHealthUI(data) {
+            const health = data.health || computeFreshnessStatus(data);
+            healthStatus = health.status || health.label || 'UNKNOWN';
+            const cap = data.capabilities || capabilities || {};
+            capabilities = cap;
+
+            const fixit = document.getElementById('fixit-section');
+            const fixitCmd = document.getElementById('fixit-cmd');
+            const fixitHelper = document.getElementById('fixit-helper');
+            if (fixit) {
+                const showFixit = healthStatus !== 'OK';
+                fixit.classList.toggle('hidden', !showFixit);
+                const restartCmd = cap.restart_instructions?.bot || 'pm2 restart coin-back';
+                if (fixitCmd) fixitCmd.textContent = restartCmd;
+                if (fixitHelper) fixitHelper.textContent = healthStatus === 'STALE' ? 'Restart bot, then refresh page' : 'Check logs or restart if persists';
+            }
+        }
+
+        function coverageStatusClass(status) {
+            if (status === 'OK') return 'status-ok';
+            if (status === 'STALE') return 'status-warn';
+            return 'status-err';
+        }
+
+        async function copyFixit() {
+            const cmd = document.getElementById('fixit-cmd')?.textContent || '';
+            if (!cmd) return;
+            try {
+                await navigator.clipboard.writeText(cmd);
+                showNotification('Copied', 'success');
+            } catch (e) {
+                showNotification('Copy failed', 'error');
+            }
+        }
+
+        function ensureCanTrade(action = 'this action') {
+            if (healthStatus === 'STALE') {
+                alert('System health is STALE. Wait for state to refresh before ' + action + '.');
+                return false;
+            }
+            if (healthStatus === 'DEGRADED') {
+                return confirm('Health is DEGRADED. Proceed to ' + action + '?');
+            }
+            return true;
+        }
+
+        function setCoverageSort(key) {
+            if (coverageSort.key === key) {
+                coverageSort.dir = coverageSort.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                coverageSort.key = key;
+                coverageSort.dir = 'asc';
+            }
+            if (lastCoverage) renderCoverageTable(lastCoverage);
+        }
+
+        function renderCoverageCell(tfData) {
+            if (!tfData) return '<span class="text-gray-500">--</span>';
+            const age = formatAge(tfData.age_seconds);
+            const status = tfData.status || 'MISSING';
+            return `
+                <div class="flex items-center justify-center gap-1">
+                    <span class="status-dot ${coverageStatusClass(status)}"></span>
+                    <span class="mono">${age}</span>
+                </div>
+            `;
+        }
+
+        function renderCoverageTable(data) {
+            const tbody = document.getElementById('coverage-tbody');
+            if (!tbody) return;
+            if (!data || !data.symbols) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No coverage data</td></tr>';
+                return;
+            }
+
+            const rows = Object.entries(data.symbols).map(([symbol, entry]) => {
+                const tfs = entry.timeframes || {};
+                const bars = [
+                    tfs['1m']?.bars_available || 0,
+                    tfs['5m']?.bars_available || 0,
+                    tfs['1h']?.bars_available || 0,
+                    tfs['1d']?.bars_available || 0,
+                ];
+                const reasons = []
+                    .concat(tfs['1m']?.reasons || [])
+                    .concat(tfs['5m']?.reasons || [])
+                    .concat(tfs['1h']?.reasons || [])
+                    .concat(tfs['1d']?.reasons || []);
+                const reasonText = [...new Set(reasons)].slice(0, 4).join(', ');
+                return {
+                    symbol,
+                    entry,
+                    bars,
+                    reasonText,
+                    age1m: tfs['1m']?.age_seconds ?? 999999,
+                    age5m: tfs['5m']?.age_seconds ?? 999999,
+                    age1h: tfs['1h']?.age_seconds ?? 999999,
+                    age1d: tfs['1d']?.age_seconds ?? 999999,
+                    spread: entry.spread_bps ?? 0,
+                };
+            });
+
+            const dir = coverageSort.dir === 'asc' ? 1 : -1;
+            rows.sort((a, b) => {
+                if (coverageSort.key === 'symbol') {
+                    return a.symbol.localeCompare(b.symbol) * dir;
+                }
+                if (coverageSort.key === 'spread') {
+                    return (a.spread - b.spread) * dir;
+                }
+                if (coverageSort.key === '1m') return (a.age1m - b.age1m) * dir;
+                if (coverageSort.key === '5m') return (a.age5m - b.age5m) * dir;
+                if (coverageSort.key === '1h') return (a.age1h - b.age1h) * dir;
+                if (coverageSort.key === '1d') return (a.age1d - b.age1d) * dir;
+                return 0;
+            });
+
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">No coverage data</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = rows.map(row => {
+                const tfs = row.entry.timeframes || {};
+                return `
+                    <tr>
+                        <td class="font-medium">${row.symbol}</td>
+                        <td class="text-center">${renderCoverageCell(tfs['1m'])}</td>
+                        <td class="text-center">${renderCoverageCell(tfs['5m'])}</td>
+                        <td class="text-center">${renderCoverageCell(tfs['1h'])}</td>
+                        <td class="text-center">${renderCoverageCell(tfs['1d'])}</td>
+                        <td class="text-center mono">${row.bars.join(' / ')}</td>
+                        <td class="text-right mono">${(row.spread || 0).toFixed(1)}</td>
+                        <td class="text-left text-gray-400">${row.reasonText || '--'}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const summaryEl = document.getElementById('coverage-summary');
+            if (summaryEl && data.summary) {
+                const tfSummary = data.summary['1m'] || {};
+                const ok = tfSummary.OK || 0;
+                const stale = tfSummary.STALE || 0;
+                const missing = tfSummary.MISSING || 0;
+                summaryEl.textContent = `1m: ${ok} ok, ${stale} stale, ${missing} missing`;
+            }
+        }
+
+        async function fetchCoverage() {
+            try {
+                const data = await Api.getJson('/api/coverage');
+                lastCoverage = data;
+                renderCoverageTable(data);
+            } catch (e) {
+                const tbody = document.getElementById('coverage-tbody');
+                if (tbody) {
+                    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-4">Coverage unavailable</td></tr>';
+                }
+            }
+        }
+
+        function updateGateTraces(data) {
+            const tbody = document.getElementById('gate-trace-tbody');
+            if (!tbody) return;
+            const traces = Array.isArray(data.gate_traces) ? data.gate_traces : [];
+            const now = Date.now();
+
+            if (!traces.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-gray-500 py-4">No gate traces yet</td></tr>';
+                return;
+            }
+
+            const sorted = traces.slice().sort((a, b) => {
+                const at = new Date(a.ts || 0).getTime();
+                const bt = new Date(b.ts || 0).getTime();
+                return bt - at;
+            }).slice(0, 20);
+
+            tbody.innerHTML = sorted.map(t => {
+                const ageSeconds = t.ts ? (now - new Date(t.ts).getTime()) / 1000 : null;
+                const decision = t.passed ? 'PASS' : 'BLOCK';
+                const decisionClass = t.passed ? 'text-green-400' : 'text-red-400';
+                const gate = t.blocking_gate || '--';
+                const reason = t.blocking_reason || '--';
+                return `
+                    <tr>
+                        <td class="font-medium">${t.symbol || '--'}</td>
+                        <td class="text-center ${decisionClass}">${decision}</td>
+                        <td class="text-left">${gate}</td>
+                        <td class="text-left text-gray-400">${reason}</td>
+                        <td class="text-right mono">${formatAge(ageSeconds)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const summaryEl = document.getElementById('gate-summary');
+            if (summaryEl) {
+                const blocked = sorted.filter(t => !t.passed).length;
+                summaryEl.textContent = `${sorted.length} tracked, ${blocked} blocked`;
+            }
+        }
+
+        // Chart now handled by portfolioChart.js component in main.js
+
         function updateHeartbeat(id, age) {
             const el = document.getElementById(id);
+            const labelEl = document.getElementById(id + '-label');
             if (!el) return;
             const a = age || 999;
-            el.className = 'status-dot ' + (a < 5 ? 'status-ok' : a < 30 ? 'status-warn' : 'status-err');
+            const status = a < 5 ? 'ok' : a < 30 ? 'warn' : 'err';
+            el.className = 'status-dot status-' + status;
+            if (labelEl) {
+                labelEl.className = status === 'ok' ? 'text-green-400' : status === 'warn' ? 'text-yellow-400' : 'text-red-400';
+            }
         }
 
         function updateUI(data) {
             if (data.error) return;
 
-            // Header
-            document.getElementById('last-update').textContent = new Date(data.ts).toLocaleTimeString();
-            document.getElementById('mode-badge').textContent = (data.mode || 'paper').toUpperCase();
-            document.getElementById('mode-badge').className = 'px-2 py-0.5 text-xs rounded ' + 
-                (data.mode === 'live' ? 'bg-green-800 text-green-200' : 'bg-yellow-800 text-yellow-200');
-            document.getElementById('profile-badge').textContent = data.profile || 'prod';
+            lastBotState = data;
 
-            // Summary bar
-            document.getElementById('portfolio-value').textContent = formatMoney(data.portfolio_value);
-            
-            const dailyPnl = document.getElementById('daily-pnl');
-            dailyPnl.textContent = formatMoney(data.daily_pnl);
-            dailyPnl.className = 'text-xl font-semibold ' + pnlClass(data.daily_pnl);
-            
-            const unrealizedPnl = document.getElementById('unrealized-pnl');
-            unrealizedPnl.textContent = formatMoney(data.unrealized_pnl);
-            unrealizedPnl.className = 'text-xl font-semibold ' + pnlClass(data.unrealized_pnl);
+            // Profile badge update
+            const profileBadge = document.getElementById('profile-badge');
+            if (profileBadge) profileBadge.textContent = data.profile || 'prod';
 
+            // Track mode for reference
+            if (data.mode === 'live') isLiveMode = true;
+            
+            // Startup/Warmup Banner
+            const phase = data.phase || 'trading';
+            const warmSymbols = data.warm_symbols || 0;
+            const totalSymbols = data.symbols_streaming || 120;
+            const warmPct = totalSymbols > 0 ? Math.round((warmSymbols / totalSymbols) * 100) : 0;
+            const startupBanner = document.getElementById('startup-banner');
+            const startupTitle = document.getElementById('startup-title');
+            const startupDetail = document.getElementById('startup-detail');
+            const startupProgress = document.getElementById('startup-progress');
+            const startupBar = document.getElementById('startup-bar');
+            
+            // Show banner during startup phases OR when warming up
+            const isStartingUp = phase !== 'trading' || warmPct < 80;
+            startupBanner.classList.toggle('hidden', !isStartingUp);
+            
+            if (isStartingUp) {
+                const phaseInfo = {
+                    'init': { title: 'Starting', pct: 10 },
+                    'preflight': { title: 'Connecting', pct: 25 },
+                    'syncing': { title: 'Syncing', pct: 45 },
+                    'backfill': { title: 'Loading', pct: 65 },
+                    'trading': { title: 'Warming', pct: warmPct },
+                    'error': { title: 'Error', pct: 0 },
+                };
+                const info = phaseInfo[phase] || phaseInfo['init'];
+                if (startupTitle) startupTitle.textContent = info.title;
+                const pct = phase === 'trading' ? warmPct : info.pct;
+                if (startupProgress) startupProgress.textContent = `${pct}%`;
+                if (startupBar) startupBar.style.width = `${pct}%`;
+                
+                // Removed checklist - simplified UI
+                const chkApi = document.getElementById('chk-api');
+                const chkWs = document.getElementById('chk-ws');
+                const chkData = document.getElementById('chk-data');
+                const chkPos = document.getElementById('chk-pos');
+                if (chkApi) {
+                    chkData.textContent = warmPct >= 50 ? '✓' : '◯';
+                    chkData.className = warmPct >= 50 ? 'text-green-400' : 'text-gray-600';
+                }
+                if (chkPos) {
+                    chkPos.textContent = (phase === 'trading' || phase === 'backfill') ? '✓' : '◯';
+                    chkPos.className = (phase === 'trading' || phase === 'backfill') ? 'text-green-400' : 'text-gray-600';
+                }
+                
+                // Change color on error
+                if (phase === 'error') {
+                    startupBanner.className = 'mb-4 card p-4 border-l-4 border-red-500 bg-gradient-to-r from-red-900/30 to-gray-900';
+                    startupTitle.className = 'font-bold text-red-300 text-lg';
+                }
+            }
+            
+            // Portfolio hero, stats bar, chart handled by JS components in main.js
+            
+            updateDecisionLens(data);
+            updateGateTraces(data);
+
+            // Streaming counts (still inline)
             const eng = data.engine || {};
-            const winRate = eng.win_rate || 0;
-            document.getElementById('win-rate').textContent = winRate.toFixed(0) + '%';
-            document.getElementById('win-rate').className = 'text-xl font-semibold ' + (winRate >= 50 ? 'pnl-pos' : 'pnl-neg');
-            
-            document.getElementById('trades-count').textContent = (eng.wins_today || 0) + 'W / ' + (eng.losses_today || 0) + 'L';
-            document.getElementById('available-budget').textContent = formatMoney(eng.bot_available_usd, 0);
-
-            // Status bar
-            document.getElementById('btc-regime').textContent = data.btc_regime || 'normal';
-            document.getElementById('exposure-pct').textContent = (eng.exposure_pct || 0).toFixed(0) + '%';
-            document.getElementById('position-count').textContent = data.positions?.length || 0;
             document.getElementById('warm-count').textContent = data.warm_symbols || 0;
             document.getElementById('streaming-count').textContent = data.symbols_streaming || 0;
 
@@ -420,33 +1243,27 @@
             updateHeartbeat('hb-5m', hb.candles_5m);
             updateHeartbeat('hb-ml', hb.ml);
             updateHeartbeat('hb-router', hb.order_router);
+            updateHealthUI(data);
 
-            // Kill switch
+            // Kill switch warning (button handled by js/main.js)
             const killWarning = document.getElementById('kill-warning');
-            const killBtn = document.getElementById('kill-btn');
-            killWarning.classList.toggle('hidden', !data.kill_switch);
-            killBtn.textContent = data.kill_switch ? 'Resume Trading' : 'Kill Switch';
-            killBtn.className = 'btn ' + (data.kill_switch ? 'btn-danger' : 'btn-secondary');
+            if (killWarning) killWarning.classList.toggle('hidden', !data.kill_switch);
 
-            // Positions table
-            const positionsTbody = document.getElementById('positions-tbody');
-            if (data.positions?.length > 0) {
-                positionsTbody.innerHTML = data.positions.map(pos => `
-                    <tr>
-                        <td class="font-medium">${pos.symbol.replace('-USD', '')}</td>
-                        <td>LONG</td>
-                        <td class="mono">${formatMoney(pos.entry_price, 4)}</td>
-                        <td class="mono">${formatMoney(pos.current_price, 4)}</td>
-                        <td class="mono">${formatMoney(pos.size_usd, 0)}</td>
-                        <td class="mono ${pnlClass(pos.pnl_usd)}">${formatMoney(pos.pnl_usd)}</td>
-                        <td class="mono ${pnlClass(pos.pnl_pct)}">${formatPct(pos.pnl_pct)}</td>
-                        <td class="mono text-red-400">${formatMoney(pos.stop_price, 4)}</td>
-                        <td class="mono text-green-400">${formatMoney(pos.tp1_price, 4)}</td>
-                        <td>${pos.hold_minutes}m</td>
-                    </tr>
-                `).join('');
-            } else {
-                positionsTbody.innerHTML = '<tr><td colspan="10" class="text-center text-gray-500 py-8">No open positions</td></tr>';
+            // Positions now handled by positionsTable.js component in main.js
+
+            // Inline Activity Feed (last 5 signals)
+            const activityFeed = document.getElementById('activity-feed');
+            if (data.recent_signals?.length > 0) {
+                const recentItems = data.recent_signals.slice(0, 5).map(sig => {
+                    const symbol = (sig.symbol || '').replace('-USD', '');
+                    const ago = sig.ts ? Math.round((Date.now() - new Date(sig.ts).getTime()) / 60000) : 0;
+                    if (sig.taken) {
+                        return `<span class="text-green-400">${symbol}</span> <span class="text-gray-500">entered (${ago}m)</span>`;
+                    } else {
+                        return `<span class="text-gray-400">${symbol}</span> <span class="text-gray-600">blocked (${ago}m)</span>`;
+                    }
+                });
+                activityFeed.innerHTML = recentItems.join('<span class="text-gray-700">|</span>');
             }
 
             // Signals table
@@ -467,65 +1284,925 @@
                 signalsTbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No signals yet</td></tr>';
             }
 
-            // Leaderboard table
+            // Leaderboard table (element may not exist)
             const leaderboardTbody = document.getElementById('leaderboard-tbody');
-            if (data.burst_leaderboard?.length > 0) {
-                leaderboardTbody.innerHTML = data.burst_leaderboard.map(b => `
-                    <tr>
-                        <td class="text-gray-500">#${b.rank}</td>
-                        <td class="font-medium">${b.symbol.replace('-USD', '')}</td>
-                        <td class="mono">${formatMoney(b.price, 4)}</td>
-                        <td class="mono">${b.burst_score?.toFixed(0) || 0}</td>
-                        <td class="mono">${b.vol_spike?.toFixed(2) || '1.00'}x</td>
-                        <td class="mono ${pnlClass(b.trend_5m)}">${formatPct(b.trend_5m)}</td>
-                        <td><span class="px-2 py-0.5 rounded text-xs ${
-                            b.tier === 'tier1' ? 'bg-green-900 text-green-300' : 
-                            b.tier === 'tier2' ? 'bg-blue-900 text-blue-300' : 
-                            'bg-gray-700 text-gray-300'
-                        }">${b.tier}</span></td>
-                    </tr>
-                `).join('');
-            } else {
-                leaderboardTbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No data</td></tr>';
+            if (leaderboardTbody) {
+                if (data.burst_leaderboard?.length > 0) {
+                    leaderboardTbody.innerHTML = data.burst_leaderboard.map(b => `
+                        <tr>
+                            <td class="text-gray-500">#${b.rank}</td>
+                            <td class="font-medium">${b.symbol.replace('-USD', '')}</td>
+                            <td class="mono">${formatMoney(b.price, 4)}</td>
+                            <td class="mono">${b.burst_score?.toFixed(0) || 0}</td>
+                            <td class="mono">${b.vol_spike?.toFixed(2) || '1.00'}x</td>
+                            <td class="mono ${pnlClass(b.trend_5m)}">${formatPct(b.trend_5m)}</td>
+                            <td><span class="px-2 py-0.5 rounded text-xs ${
+                                b.tier === 'tier1' ? 'bg-green-900 text-green-300' : 
+                                b.tier === 'tier2' ? 'bg-blue-900 text-blue-300' : 
+                                'bg-gray-700 text-gray-300'
+                            }">${b.tier}</span></td>
+                        </tr>
+                    `).join('');
+                } else {
+                    leaderboardTbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No data</td></tr>';
+                }
             }
 
-            // Engine stats
+            // Engine stats (guard against missing elements)
             const uptimeSec = eng.uptime_seconds || 0;
-            document.getElementById('eng-uptime').textContent = 
-                Math.floor(uptimeSec / 3600) + 'h ' + Math.floor((uptimeSec % 3600) / 60) + 'm';
-            document.getElementById('eng-pf').textContent = (eng.profit_factor || 0).toFixed(2);
-            document.getElementById('eng-avg-win').textContent = formatMoney(eng.avg_win);
-            document.getElementById('eng-avg-loss').textContent = formatMoney(eng.avg_loss);
-            document.getElementById('eng-big-win').textContent = formatMoney(eng.biggest_win);
-            document.getElementById('eng-big-loss').textContent = formatMoney(eng.biggest_loss);
-            document.getElementById('eng-dd').textContent = formatMoney(eng.max_drawdown);
-            document.getElementById('eng-rest').textContent = (eng.rest_requests || 0).toLocaleString();
-            document.getElementById('eng-429s').textContent = eng.rest_429s || 0;
-            document.getElementById('eng-ticks').textContent = eng.ticks_5s || 0;
-            document.getElementById('eng-candles').textContent = eng.candles_5s || 0;
-            document.getElementById('eng-persisted').textContent = (eng.candles_persisted || 0).toLocaleString();
-            document.getElementById('eng-ml-fresh').textContent = (eng.ml_fresh_pct || 0).toFixed(0) + '%';
-            document.getElementById('eng-vol').textContent = eng.vol_regime || 'normal';
+            const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+            setEl('eng-uptime', Math.floor(uptimeSec / 3600) + 'h ' + Math.floor((uptimeSec % 3600) / 60) + 'm');
+            setEl('eng-pf', (eng.profit_factor || 0).toFixed(2));
+            setEl('eng-avg-win', formatMoney(eng.avg_win));
+            setEl('eng-avg-loss', formatMoney(eng.avg_loss));
+            setEl('eng-big-win', formatMoney(eng.biggest_win));
+            setEl('eng-big-loss', formatMoney(eng.biggest_loss));
+            setEl('eng-dd', formatMoney(eng.max_drawdown));
+            setEl('eng-rest', (eng.rest_requests || 0).toLocaleString());
+            setEl('eng-429s', eng.rest_429s || 0);
+            setEl('eng-ticks', eng.ticks_5s || 0);
+            setEl('eng-candles', eng.candles_5s || 0);
+            setEl('eng-persisted', (eng.candles_persisted || 0).toLocaleString());
+            setEl('eng-ml-fresh', (eng.ml_fresh_pct || 0).toFixed(0) + '%');
+            setEl('eng-vol', eng.vol_regime || 'normal');
 
-            // Rejections
+            // Rejections (guard against missing elements)
             const rej = data.rejections || {};
-            document.getElementById('rej-spread').textContent = (rej.spread || 0).toLocaleString();
-            document.getElementById('rej-warmth').textContent = (rej.warmth || 0).toLocaleString();
-            document.getElementById('rej-regime').textContent = (rej.regime || 0).toLocaleString();
-            document.getElementById('rej-score').textContent = (rej.score || 0).toLocaleString();
-            document.getElementById('rej-rr').textContent = (rej.rr || 0).toLocaleString();
-            document.getElementById('rej-limits').textContent = (rej.limits || 0).toLocaleString();
+            setEl('rej-spread', (rej.spread || 0).toLocaleString());
+            setEl('rej-warmth', (rej.warmth || 0).toLocaleString());
+            setEl('rej-regime', (rej.regime || 0).toLocaleString());
+            setEl('rej-score', (rej.score || 0).toLocaleString());
+            setEl('rej-rr', (rej.rr || 0).toLocaleString());
+            setEl('rej-limits', (rej.limits || 0).toLocaleString());
+
+            // Dust & Reconciliation panel
+            updateDustReconciliation(data);
         }
 
-        async function toggleKillSwitch() {
-            try {
-                await fetch('/api/kill', { method: 'POST' });
-            } catch (e) {
-                console.error('Failed to toggle kill switch:', e);
+        function updateDustReconciliation(data) {
+            const posCount = data.positions?.length || 0;
+            const maxPos = data.max_positions || 15;
+            const dust = data.dust_positions || [];
+            const dustValue = dust.reduce((sum, d) => sum + (d.value_usd || 0), 0);
+            
+            // Position gate status
+            const gateEl = document.getElementById('position-gate');
+            if (gateEl) {
+                gateEl.textContent = `${posCount}/${maxPos} positions`;
+                gateEl.className = posCount >= maxPos ? 'text-xs text-red-400' : 'text-xs text-gray-500';
+            }
+            
+            // Dust count
+            const dustEl = document.getElementById('dust-count');
+            if (dustEl) {
+                dustEl.textContent = `🧹 ${dust.length} dust ($${dustValue.toFixed(2)})`;
+                dustEl.className = dust.length > 0 ? 'text-xs text-yellow-400' : 'text-xs text-gray-500';
+            }
+            
+            // Reconciliation status (simple check - positions vs exchange holdings)
+            const holdings = data.exchange_holdings || {};
+            const holdingCount = Object.keys(holdings).length;
+            const statusEl = document.getElementById('reconciliation-status');
+            if (statusEl && holdingCount > 0) {
+                const inSync = Math.abs(posCount - (holdingCount - dust.length)) <= 2;
+                statusEl.textContent = inSync ? 'Synced' : 'Mismatch';
+                statusEl.className = inSync 
+                    ? 'text-xs px-2 py-0.5 rounded bg-green-900/50 text-green-400'
+                    : 'text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400';
+            }
+            
+            // Store for details view
+            window._dustData = { dust, holdings, posCount, maxPos };
+        }
+
+        function showReconciliationDetails() {
+            const detailsEl = document.getElementById('reconciliation-details');
+            if (!detailsEl) return;
+            
+            detailsEl.classList.toggle('hidden');
+            
+            if (!detailsEl.classList.contains('hidden')) {
+                const data = window._dustData || {};
+                const dust = data.dust || [];
+                const holdings = data.holdings || {};
+                
+                // Show dust list
+                const dustListEl = document.getElementById('dust-list');
+                if (dustListEl) {
+                    if (dust.length > 0) {
+                        dustListEl.innerHTML = '<strong>Dust positions:</strong> ' + 
+                            dust.map(d => `${d.symbol?.replace('-USD','')} ($${(d.value_usd||0).toFixed(2)})`).join(', ');
+                    } else {
+                        dustListEl.innerHTML = '<span class="text-green-400">No dust positions</span>';
+                    }
+                }
+                
+                // Show mismatch info
+                const mismatchEl = document.getElementById('recon-mismatches');
+                if (mismatchEl) {
+                    const holdingCount = Object.keys(holdings).length;
+                    mismatchEl.innerHTML = `Registry: ${data.posCount || 0} | Exchange: ${holdingCount} holdings | Gate: ${data.posCount || 0}/${data.maxPos || 15}`;
+                }
             }
         }
 
-        connect();
+        // toggleKillSwitch moved to js/actions.js with two-step arming
+
+        async function setMode(mode) {
+            // Confirm before switching to LIVE mode
+            if (mode === 'live') {
+                if (!confirm('Switch to LIVE trading mode? This will use real money.')) {
+                    return;
+                }
+            }
+            
+            // Check if bot is running first
+            try {
+                const statusResp = await fetch('/api/bot/status');
+                const status = await statusResp.json();
+                if (status.running) {
+                    showNotification('Stop the bot first before changing mode', 'error');
+                    return;
+                }
+            } catch (e) {
+                // Continue anyway
+            }
+            
+            try {
+                const resp = await fetch(`/api/control/mode?mode=${mode}`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`Mode set to ${mode.toUpperCase()} - click Start to begin`, 'success');
+                    updateControlUI({ mode: mode, status: 'stopped', is_running: false });
+                } else {
+                    showNotification(data.error || 'Failed to change mode', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to set mode:', e);
+                showNotification(`Failed to change mode: ${e.message}`, 'error');
+            }
+        }
+
+        async function sendCommand(command) {
+            if (capabilities.process_control === false) {
+                showNotification('Managed by PM2. Use pm2 restart coin-back', 'error');
+                return;
+            }
+            if (healthStatus === 'STALE') {
+                showNotification('System is stale. Wait for refresh before sending commands.', 'error');
+                return;
+            }
+            try {
+                const resp = await fetch(`/api/control/command?command=${command}`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`Command '${command}' sent`, 'success');
+                } else {
+                    showNotification(data.error || 'Command failed', 'error');
+                }
+            } catch (e) {
+                console.error('Failed to send command:', e);
+                showNotification('Failed to send command', 'error');
+            }
+        }
+
+        // Position Control Functions
+        async function closeBotPosition(symbol) {
+            if (!ensureCanTrade('close a position')) return;
+            if (!confirm(`Close position for ${symbol.replace('-USD', '')}?`)) return;
+            try {
+                const resp = await fetch(`/api/positions/${symbol}/close`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`Closed ${symbol.replace('-USD', '')}`, 'success');
+                } else {
+                    showNotification(data.error || 'Failed to close position', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to close position', 'error');
+            }
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            const messagesDiv = document.getElementById('chat-messages');
+            messagesDiv.innerHTML += `<div class="text-right"><span class="inline-block px-3 py-2 bg-blue-600 rounded-lg text-sm">${message}</span></div>`;
+            input.value = '';
+            
+            messagesDiv.innerHTML += `<div class="text-gray-400 text-sm">Thinking...</div>`;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            
+            try {
+                // Use Argent service on port 8090
+                const resp = await fetch('http://localhost:8090/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({message})
+                });
+                const data = await resp.json();
+                
+                // Remove "Thinking..." and add response
+                const msgs = messagesDiv.querySelectorAll('div');
+                msgs[msgs.length - 1].remove();
+                
+                const responseHtml = data.response.replace(/\n/g, '<br>');
+                messagesDiv.innerHTML += `<div><span class="inline-block px-3 py-2 bg-gray-700 rounded-lg text-sm">${responseHtml}</span></div>`;
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } catch (e) {
+                messagesDiv.innerHTML += `<div class="text-red-400 text-sm">Error: ${e.message}</div>`;
+            }
+        }
+        
+        function askBot(question) {
+            document.getElementById('chat-input').value = question;
+            sendChat();
+        }
+
+        async function closeAllPositions() {
+            if (!ensureCanTrade('close all positions')) return;
+            if (!confirm('Close ALL positions? This cannot be undone.')) return;
+            try {
+                const resp = await fetch('/api/positions/close-all', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`Closed ${data.closed?.length || 0} positions`, 'success');
+                } else {
+                    showNotification(data.error || 'Failed to close positions', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to close all positions', 'error');
+            }
+        }
+
+        async function lockProfits(symbol) {
+            if (!ensureCanTrade('lock profits')) return;
+            try {
+                const resp = await fetch(`/api/position/${symbol}/lock-profits`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`Locked profits for ${symbol.replace('-USD', '')}`, 'success');
+                } else {
+                    showNotification(data.error || 'Failed to lock profits', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to lock profits', 'error');
+            }
+        }
+
+        // Order History Functions
+        let orderHistoryData = [];
+        
+        async function loadOrderHistory() {
+            try {
+                const resp = await fetch('/api/orders/history?limit=100');
+                const data = await resp.json();
+                if (data.connected) {
+                    orderHistoryData = data.orders || [];
+                    renderOrderHistory();
+                } else {
+                    document.getElementById('orders-tbody').innerHTML = 
+                        `<tr><td colspan="8" class="text-center text-gray-500 py-8">${data.error || 'Not connected to Coinbase'}</td></tr>`;
+                }
+            } catch (e) {
+                console.error('Failed to load order history:', e);
+                document.getElementById('orders-tbody').innerHTML = 
+                    '<tr><td colspan="8" class="text-center text-red-400 py-8">Failed to load orders</td></tr>';
+            }
+        }
+        
+        function renderOrderHistory() {
+            const filter = document.getElementById('orders-filter').value;
+            let filtered = orderHistoryData;
+            
+            if (filter === 'bot') filtered = orderHistoryData.filter(o => o.is_bot_order);
+            else if (filter === 'manual') filtered = orderHistoryData.filter(o => !o.is_bot_order);
+            else if (filter === 'buy') filtered = orderHistoryData.filter(o => o.side === 'BUY');
+            else if (filter === 'sell') filtered = orderHistoryData.filter(o => o.side === 'SELL');
+            
+            const tbody = document.getElementById('orders-tbody');
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center text-gray-500 py-8">No orders found</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = filtered.map(o => {
+                const time = o.created_at ? new Date(o.created_at).toLocaleString() : '--';
+                const sideClass = o.side === 'BUY' ? 'text-green-400' : 'text-red-400';
+                const statusClass = o.status === 'FILLED' ? 'text-green-400' : o.status === 'CANCELLED' ? 'text-gray-500' : 'text-yellow-400';
+                const sourceClass = o.is_bot_order ? 'text-blue-400' : 'text-purple-400';
+                
+                return `
+                    <tr class="border-b border-gray-800 hover:bg-gray-800/50">
+                        <td class="p-2 text-gray-400 text-xs">${time}</td>
+                        <td class="p-2 font-medium">${o.symbol}</td>
+                        <td class="p-2 ${sideClass}">${o.side}</td>
+                        <td class="p-2 text-right mono">${o.filled_size.toFixed(6)}</td>
+                        <td class="p-2 text-right mono">${formatMoney(o.avg_price, 4)}</td>
+                        <td class="p-2 text-right mono">${formatMoney(o.total_value)}</td>
+                        <td class="p-2 ${statusClass}">${o.status}</td>
+                        <td class="p-2 ${sourceClass}">${o.source}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        // Filter change handler
+        document.getElementById('orders-filter')?.addEventListener('change', renderOrderHistory);
+
+        // Strategy Management Functions
+        let strategiesData = {};
+        
+        async function loadStrategies() {
+            try {
+                const resp = await fetch('/api/strategies');
+                strategiesData = await resp.json();
+                renderStrategies();
+            } catch (e) {
+                console.error('Failed to load strategies:', e);
+            }
+        }
+
+        function renderStrategies() {
+            const tbody = document.getElementById('strategies-tbody');
+            if (!strategiesData.strategies || Object.keys(strategiesData.strategies).length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center text-gray-500 py-8">No strategies found</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = Object.entries(strategiesData.strategies).map(([name, s]) => `
+                <tr>
+                    <td class="font-medium">${name}</td>
+                    <td>
+                        <button onclick="toggleStrategy('${name}')" class="px-2 py-1 rounded text-xs ${s.enabled ? 'bg-green-700 text-green-200' : 'bg-gray-700 text-gray-400'}">
+                            ${s.enabled ? 'ON' : 'OFF'}
+                        </button>
+                    </td>
+                    <td>${s.priority}</td>
+                    <td>${s.stats?.total_trades || 0}</td>
+                    <td>${(s.stats?.win_rate || 0).toFixed(1)}%</td>
+                    <td class="${(s.stats?.total_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${formatMoney(s.stats?.total_pnl || 0)}</td>
+                    <td class="${(s.stats?.avg_pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}">${formatMoney(s.stats?.avg_pnl || 0)}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function toggleStrategy(name) {
+            try {
+                const resp = await fetch(`/api/strategy/${name}/toggle`, { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification(`${name} ${data.enabled ? 'enabled' : 'disabled'}`, 'success');
+                    loadStrategies();
+                } else {
+                    showNotification(data.error || 'Failed to toggle strategy', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to toggle strategy', 'error');
+            }
+        }
+
+        async function enableAllStrategies() {
+            try {
+                await fetch('/api/strategies/enable-all', { method: 'POST' });
+                showNotification('All strategies enabled', 'success');
+                loadStrategies();
+            } catch (e) {
+                showNotification('Failed to enable strategies', 'error');
+            }
+        }
+
+        async function disableAllStrategies() {
+            try {
+                await fetch('/api/strategies/disable-all', { method: 'POST' });
+                showNotification('All strategies disabled', 'success');
+                loadStrategies();
+            } catch (e) {
+                showNotification('Failed to disable strategies', 'error');
+            }
+        }
+
+        // Config Management Functions
+        let configData = {};
+        let pauseNewEntries = false;
+
+        function formatTimestamp(ts) {
+            if (!ts) return '--';
+            const parsed = new Date(ts);
+            if (Number.isNaN(parsed.getTime())) return String(ts);
+            return parsed.toLocaleString();
+        }
+
+        function formatConfigValue(value) {
+            if (value === null || typeof value === 'undefined') return '--';
+            if (typeof value === 'string') return value;
+            return JSON.stringify(value);
+        }
+
+        function renderConfigDiff(startSnap, runningSnap) {
+            const diffEl = document.getElementById('cfg-diff');
+            if (!diffEl) return;
+            const keys = new Set([
+                ...Object.keys(startSnap || {}),
+                ...Object.keys(runningSnap || {}),
+            ]);
+            const changes = [];
+            keys.forEach((key) => {
+                const startVal = startSnap ? startSnap[key] : undefined;
+                const runningVal = runningSnap ? runningSnap[key] : undefined;
+                if (JSON.stringify(startVal) !== JSON.stringify(runningVal)) {
+                    changes.push({ key, startVal, runningVal });
+                }
+            });
+            changes.sort((a, b) => a.key.localeCompare(b.key));
+
+            if (!changes.length) {
+                diffEl.innerHTML = '<div class="text-gray-500">No differences</div>';
+                return;
+            }
+
+            const rows = changes.map((item) => `
+                <tr class="border-b border-gray-800">
+                    <td class="py-1 pr-2 text-gray-400">${item.key}</td>
+                    <td class="py-1 pr-2 font-mono break-all">${formatConfigValue(item.startVal)}</td>
+                    <td class="py-1 font-mono break-all text-amber-300">${formatConfigValue(item.runningVal)}</td>
+                </tr>
+            `).join('');
+
+            diffEl.innerHTML = `
+                <table class="w-full text-xs">
+                    <thead>
+                        <tr class="text-gray-500 text-xs border-b border-gray-800">
+                            <th class="text-left py-1 pr-2">Key</th>
+                            <th class="text-left py-1 pr-2">Start</th>
+                            <th class="text-left py-1">Running</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            `;
+        }
+
+        function renderConfigSnapshots(snapshots) {
+            const startEl = document.getElementById('cfg-start-json');
+            const runningEl = document.getElementById('cfg-running-json');
+            const refreshedEl = document.getElementById('cfg-last-refreshed');
+            if (!startEl || !runningEl || !refreshedEl) return;
+
+            const startSnap = snapshots?.config_start || {};
+            const runningSnap = snapshots?.config_running || {};
+
+            startEl.textContent = Object.keys(startSnap).length ? JSON.stringify(startSnap, null, 2) : '--';
+            runningEl.textContent = Object.keys(runningSnap).length ? JSON.stringify(runningSnap, null, 2) : '--';
+            refreshedEl.textContent = formatTimestamp(snapshots?.config_last_refreshed);
+            renderConfigDiff(startSnap, runningSnap);
+        }
+
+        async function loadConfig() {
+            try {
+                const resp = await fetch('/api/config');
+                const data = await resp.json();
+                configData = data.config || {};
+                pauseNewEntries = typeof data.pause_new_entries === 'boolean'
+                    ? data.pause_new_entries
+                    : (configData.pause_new_entries || false);
+                renderConfigSnapshots(data.snapshots || {});
+                
+                document.getElementById('cfg-max-exposure').value = configData.max_exposure_pct || 80;
+                document.getElementById('cfg-daily-loss').value = configData.daily_loss_limit_usd || 25;
+                document.getElementById('cfg-entry-score').value = configData.entry_score_min || 40;
+                document.getElementById('cfg-spread-max').value = configData.spread_max_bps || 50;
+                document.getElementById('cfg-min-rr').value = configData.min_rr_ratio || 1.5;
+                document.getElementById('cfg-whale-usd').value = configData.whale_trade_usd || 30;
+                document.getElementById('cfg-strong-usd').value = configData.strong_trade_usd || 15;
+                document.getElementById('cfg-normal-usd').value = configData.normal_trade_usd || 10;
+                document.getElementById('cfg-scout-usd').value = configData.scout_trade_usd || 5;
+                document.getElementById('cfg-stop-pct').value = configData.fixed_stop_pct || 3.5;
+                document.getElementById('cfg-tp1-pct').value = configData.tp1_pct || 7;
+                document.getElementById('cfg-tp2-pct').value = configData.tp2_pct || 10;
+                document.getElementById('cfg-max-hold').value = configData.max_hold_minutes || 120;
+                
+                const pauseBtn = document.getElementById('cfg-pause-btn');
+                pauseBtn.textContent = pauseNewEntries ? 'ON' : 'OFF';
+                pauseBtn.className = `px-3 py-1 rounded text-xs ${pauseNewEntries ? 'bg-red-700 text-red-200' : 'bg-gray-700'}`;
+            } catch (e) {
+                console.error('Failed to load config:', e);
+            }
+        }
+
+        async function refreshConfig() {
+            try {
+                const resp = await fetch('/api/config/refresh', { method: 'POST' });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification('Config reloaded', 'success');
+                    loadConfig();
+                } else {
+                    showNotification('Failed to reload config', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to reload config', 'error');
+            }
+        }
+
+        async function saveRiskConfig() {
+            const updates = {
+                max_exposure_pct: parseFloat(document.getElementById('cfg-max-exposure').value),
+                daily_loss_limit_usd: parseFloat(document.getElementById('cfg-daily-loss').value),
+            };
+            await saveConfigUpdates(updates);
+        }
+
+        async function saveEntryConfig() {
+            const updates = {
+                entry_score_min: parseFloat(document.getElementById('cfg-entry-score').value),
+                spread_max_bps: parseFloat(document.getElementById('cfg-spread-max').value),
+                min_rr_ratio: parseFloat(document.getElementById('cfg-min-rr').value),
+            };
+            await saveConfigUpdates(updates);
+        }
+
+        async function saveSizingConfig() {
+            const updates = {
+                whale_trade_usd: parseFloat(document.getElementById('cfg-whale-usd').value),
+                strong_trade_usd: parseFloat(document.getElementById('cfg-strong-usd').value),
+                normal_trade_usd: parseFloat(document.getElementById('cfg-normal-usd').value),
+                scout_trade_usd: parseFloat(document.getElementById('cfg-scout-usd').value),
+            };
+            await saveConfigUpdates(updates);
+        }
+
+        async function saveStopsConfig() {
+            const updates = {
+                fixed_stop_pct: parseFloat(document.getElementById('cfg-stop-pct').value),
+                tp1_pct: parseFloat(document.getElementById('cfg-tp1-pct').value),
+                tp2_pct: parseFloat(document.getElementById('cfg-tp2-pct').value),
+                max_hold_minutes: parseInt(document.getElementById('cfg-max-hold').value),
+            };
+            await saveConfigUpdates(updates);
+        }
+
+        async function saveConfigUpdates(updates) {
+            try {
+                const resp = await fetch('/api/config/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ updates })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    showNotification('Config saved', 'success');
+                    loadConfig();
+                } else {
+                    showNotification(data.errors?.[0]?.error || 'Failed to save config', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to save config', 'error');
+            }
+        }
+
+        async function togglePauseEntries() {
+            pauseNewEntries = !pauseNewEntries;
+            try {
+                await fetch(`/api/config/pause-entries?paused=${pauseNewEntries}`, { method: 'POST' });
+                const pauseBtn = document.getElementById('cfg-pause-btn');
+                pauseBtn.textContent = pauseNewEntries ? 'ON' : 'OFF';
+                pauseBtn.className = `px-3 py-1 rounded text-xs ${pauseNewEntries ? 'bg-red-700 text-red-200' : 'bg-gray-700'}`;
+                showNotification(pauseNewEntries ? 'New entries paused' : 'Entries resumed', 'success');
+            } catch (e) {
+                showNotification('Failed to toggle pause', 'error');
+            }
+        }
+
+        async function resetConfig() {
+            if (!confirm('Reset all configuration to defaults?')) return;
+            try {
+                await fetch('/api/config/reset', { method: 'POST' });
+                showNotification('Config reset to defaults', 'success');
+                loadConfig();
+            } catch (e) {
+                showNotification('Failed to reset config', 'error');
+            }
+        }
+
+        // Logs Functions
+        async function loadLogs() {
+            try {
+                const filter = document.getElementById('log-filter').value;
+                const url = filter ? `/api/logs?level=${filter}` : '/api/logs';
+                const resp = await fetch(url);
+                const data = await resp.json();
+                renderLogs(data.logs || []);
+            } catch (e) {
+                console.error('Failed to load logs:', e);
+            }
+        }
+
+        function renderLogs(logs) {
+            const container = document.getElementById('logs-container');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div class="text-gray-500 text-center py-8">No logs yet</div>';
+                return;
+            }
+            
+            const levelColors = {
+                'TRADE': 'border-green-500 text-green-300',
+                'POSITION': 'border-blue-500 text-blue-300',
+                'CONFIG': 'border-purple-500 text-purple-300',
+                'STRATEGY': 'border-cyan-500 text-cyan-300',
+                'ERROR': 'border-red-500 text-red-300 bg-red-900/20',
+                'UNIVERSE': 'border-yellow-500 text-yellow-300',
+            };
+            
+            container.innerHTML = logs.slice().reverse().map(log => {
+                const colorClass = levelColors[log.level] || 'border-gray-500 text-gray-300';
+                const time = log.ts ? new Date(log.ts).toLocaleTimeString() : '--:--:--';
+                return `<div class="border-l-2 ${colorClass} pl-2 py-1 mb-1">
+                    <span class="text-gray-500">${time}</span>
+                    <span class="font-semibold">[${log.level || 'INFO'}]</span>
+                    ${log.message}
+                </div>`;
+            }).join('');
+        }
+
+        function showNotification(msg, type) {
+            const notif = document.createElement('div');
+            notif.className = `fixed top-4 right-4 px-4 py-2 rounded shadow-lg text-sm z-50 ${
+                type === 'success' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'
+            }`;
+            notif.textContent = msg;
+            document.body.appendChild(notif);
+            setTimeout(() => notif.remove(), 3000);
+        }
+
+        async function fetchCoinbasePortfolio() {
+            try {
+                const resp = await fetch('/api/portfolio/live');
+                if (resp.ok) {
+                    lastCoinbasePortfolio = await resp.json();
+                    updateCoinbasePortfolioUI();
+                }
+            } catch (e) {
+                console.error('Failed to fetch live portfolio:', e);
+            }
+        }
+
+        function updateCoinbasePortfolioUI() {
+            const summaryEl = document.getElementById('cb-summary');
+            const lastRefreshEl = document.getElementById('cb-last-refresh');
+            const tbody = document.getElementById('cb-holdings-tbody');
+            if (!summaryEl || !tbody) return;
+
+            if (!lastCoinbasePortfolio || !lastCoinbasePortfolio.connected) {
+                summaryEl.textContent = 'Not connected';
+                if (lastRefreshEl) lastRefreshEl.textContent = '--';
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-gray-500 py-8">Not connected</td></tr>';
+                return;
+            }
+
+            const data = lastCoinbasePortfolio;
+            const holdings = data.holdings || [];
+
+            if (lastRefreshEl) {
+                lastRefreshEl.textContent = `updated ${new Date().toLocaleTimeString()}`;
+            }
+
+            summaryEl.textContent = `${holdings.length} assets · ${formatMoney(data.total_balance)}`;
+
+            if (!holdings.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-gray-500 py-8">No holdings</td></tr>';
+                return;
+            }
+
+            const sorted = [...holdings].sort((a, b) => (b.value_usd || 0) - (a.value_usd || 0));
+            tbody.innerHTML = sorted.map(h => {
+                const pnlUsd = h.unrealized_pnl || 0;
+                const entryValue = (h.value_usd || 0) - pnlUsd;
+                const pnlPct = entryValue > 0 ? (pnlUsd / entryValue) * 100 : 0;
+                return `
+                    <tr>
+                        <td class="font-medium">${h.currency || '--'}</td>
+                        <td class="mono text-right">${formatMoney(h.value_usd || 0, 2)}</td>
+                        <td class="mono text-right ${pnlClass(pnlUsd)}">${formatMoney(pnlUsd, 2)}</td>
+                        <td class="mono text-right ${pnlClass(pnlPct)}">${formatPct(pnlPct)}</td>
+                        <td class="text-center">
+                            <button onclick="closeCoinbaseHolding('${h.currency}')" class="text-red-400 hover:text-red-300 text-xs">Sell</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateDecisionLens(data) {
+            const signals = Array.isArray(data.recent_signals) ? data.recent_signals : [];
+            const windowN = Math.min(50, signals.length);
+            const windowSignals = signals.slice(0, windowN);
+
+            const taken = windowSignals.filter(s => !!s.taken).length;
+            const blocked = windowSignals.filter(s => !s.taken).length;
+            const total = windowSignals.length;
+
+            const takeRate = total > 0 ? (taken / total) * 100 : 0;
+
+            const windowEl = document.getElementById('dl-window');
+            const takeEl = document.getElementById('dl-take-rate');
+            const takeSubEl = document.getElementById('dl-take-rate-sub');
+            if (windowEl) windowEl.textContent = total ? `last ${total} signals` : 'no recent signals';
+            if (takeEl) takeEl.textContent = total ? `${takeRate.toFixed(0)}%` : '—';
+            if (takeSubEl) {
+                if (!total) takeSubEl.textContent = '—';
+                else if (!blocked) takeSubEl.textContent = `${taken} taken / 0 blocked`;
+                else takeSubEl.textContent = `${taken} taken / ${blocked} blocked`;
+            }
+
+            const reasonCounts = {};
+            const offenderCounts = {};
+
+            for (const s of windowSignals) {
+                if (s && !s.taken) {
+                    const reason = (s.reason || 'blocked').toString().slice(0, 60);
+                    reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+
+                    const sym = (s.symbol || '--').replace('-USD', '');
+                    offenderCounts[sym] = (offenderCounts[sym] || 0) + 1;
+                }
+            }
+
+            const topReasons = Object.entries(reasonCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 4)
+                .map(([reason, c]) => {
+                    const pct = blocked ? (c / blocked) * 100 : 0;
+                    return `${pct.toFixed(0)}%  ${reason}`;
+                });
+
+            const topOffenders = Object.entries(offenderCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 4)
+                .map(([sym, c]) => `${sym}: ${c}`);
+
+            const topBlocksEl = document.getElementById('dl-top-blocks');
+            if (topBlocksEl) {
+                if (!total) topBlocksEl.textContent = '—';
+                else if (!blocked) topBlocksEl.textContent = 'No blocks in window';
+                else topBlocksEl.textContent = topReasons.length ? topReasons.join('\n') : '—';
+            }
+
+            const repeatEl = document.getElementById('dl-repeat');
+            if (repeatEl) {
+                if (!total) repeatEl.textContent = '—';
+                else if (!blocked) repeatEl.textContent = 'No repeat offenders';
+                else repeatEl.textContent = topOffenders.length ? topOffenders.join('\n') : '—';
+            }
+
+            const rej = data.rejections || {};
+            const gatePairs = [
+                ['Spread', rej.spread || 0],
+                ['Warmth', rej.warmth || 0],
+                ['Regime', rej.regime || 0],
+                ['Score', rej.score || 0],
+                ['R:R', rej.rr || 0],
+                ['Limits', rej.limits || 0],
+            ];
+            const gateTotal = gatePairs.reduce((s, [, v]) => s + v, 0);
+            const gateMix = gatePairs
+                .filter(([, v]) => v > 0)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 4)
+                .map(([k, v]) => `${gateTotal ? ((v / gateTotal) * 100).toFixed(0) : 0}%  ${k}`);
+
+            const gateEl = document.getElementById('dl-gate-mix');
+            if (gateEl) gateEl.textContent = gateTotal ? (gateMix.length ? gateMix.join('\n') : '—') : 'No gate stats yet';
+        }
+
+        async function closeCoinbaseHolding(currency) {
+            if (!ensureCanTrade('sell exchange holding')) return;
+            if (!confirm(`Sell ${currency}?`)) return;
+            try {
+                const resp = await fetch(`/api/positions/${currency}/close`, { method: 'POST' });
+                const result = await resp.json();
+                if (result.success) {
+                    showNotification(result.message || `Sold ${currency}`, 'success');
+                    await fetchCoinbasePortfolio();
+                } else {
+                    showNotification(result.error || 'Failed to sell', 'error');
+                }
+            } catch (e) {
+                showNotification('Failed to sell', 'error');
+            }
+        }
+
+        async function refreshCoinbasePortfolio() {
+            await fetchCoinbasePortfolio();
+        }
+        
+        // Legacy sortPositions removed - now handled by positionsTable.js
+        
+        async function closeLosingPositions() {
+            if (!ensureCanTrade('close losing positions')) return;
+            if (!confirm('Close all LOSING positions? This will sell positions with negative PnL.')) return;
+            try {
+                const resp = await fetch('/api/positions/close-losers', { method: 'POST' });
+                const result = await resp.json();
+                alert(result.message || 'Losing positions closed');
+                await fetchCoinbasePortfolio();
+                await fetchBotState();
+            } catch (e) {
+                alert('Failed: ' + e.message);
+            }
+        }
+
+        function updateControlUI(controlState, botState) {
+            lastControlState = controlState;
+            // Keep minimal legacy wiring for downstream renderers; system pill handles UX.
+        }
+
+        let fetchErrors = 0;
+        async function fetchBotState() {
+            try {
+                const [stateData, controlData] = await Promise.all([
+                    Api.getJson('/api/state'),
+                    Api.getJson('/api/control')
+                ]);
+
+                updateUI(stateData);
+                updateControlUI(controlData, stateData);
+
+                fetchErrors = 0;
+            } catch (e) {
+                console.error('Failed to fetch state:', e);
+                fetchErrors++;
+            }
+        }
+
+
+        // Transport is handled by new modules (js/main.js)
+        loadConfig();
+        fetchCoverage();
+        loadStrategies();
+
+        setInterval(fetchCoinbasePortfolio, 30000);
+        setTimeout(fetchCoinbasePortfolio, 2000);
+        setInterval(fetchCoverage, 15000);
+
+        async function copyDiagnostics() {
+            try {
+                const now = new Date().toISOString();
+                const bot = lastBotState || {};
+                const control = lastControlState || bot.control || {};
+                const cb = lastCoinbasePortfolio || {};
+
+                const issues = [];
+                if (!control.is_running && control.status !== 'running') issues.push('BOT_NOT_RUNNING');
+                if (bot.kill_switch) issues.push('KILL_SWITCH_ACTIVE');
+                if (bot.api_ok === false) issues.push('API_NOT_OK');
+                if (bot.ws_ok === false) issues.push('WS_NOT_OK');
+                if (bot.heartbeats && bot.heartbeats.ws > 30) issues.push('WS_HEARTBEAT_STALE');
+
+                const md = [
+                    '# CoinTrader Diagnostics',
+                    `Timestamp: ${now}`,
+                    '',
+                    '## Summary',
+                    `Mode: ${(control.mode || bot.mode || '--')}`,
+                    `Status: ${(control.status || '--')}`,
+                    `Issues: ${issues.length ? issues.join(', ') : 'none'}`,
+                    '',
+                    '## Raw Snapshot (JSON)',
+                    '```json',
+                    JSON.stringify({
+                        ts: now,
+                        bot_state: bot,
+                        control_state: control,
+                        coinbase_portfolio: cb,
+                    }, null, 2),
+                    '```',
+                    ''
+                ].join('\n');
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(md);
+                    showNotification('Diagnostics copied', 'success');
+                    return;
+                }
+
+                const ta = document.createElement('textarea');
+                ta.value = md;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand('copy');
+                ta.remove();
+                showNotification('Diagnostics copied', 'success');
+            } catch (e) {
+                console.error('Copy diagnostics failed:', e);
+                showNotification('Failed to copy diagnostics', 'error');
+            }
+        }
+        // Expose to window for main.js module
+        window.copyDiagnostics = copyDiagnostics;
     </script>
+    <script type="module" src="js/main.js"></script>
 </body>
 </html>

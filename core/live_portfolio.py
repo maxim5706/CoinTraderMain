@@ -67,6 +67,15 @@ class LivePortfolioManager(IPortfolioManager):
             logger.error("[ORDER] Failed to init live client: %s", e, exc_info=True)
             self._client = None
 
+    def update_config(self, config: LiveModeConfig) -> None:
+        """Update config and refresh client if API keys changed."""
+        old_key = (self.config.api_key, self.config.api_secret)
+        self.config = config
+        new_key = (self.config.api_key, self.config.api_secret)
+        if new_key != old_key:
+            self._init_live_client()
+            self._fetch_portfolio_uuid()
+
     @property
     def client(self) -> Optional[RESTClient]:
         return self._client

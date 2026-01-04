@@ -246,22 +246,31 @@ def parse_order_response(order, expected_qty: float = 0, expected_quote: float =
             # Limit order: compare filled quantity
             partial_fill = filled_size < expected_qty * 0.99
         
-        # CRITICAL FIX: For market orders with quote_size, if filled_size is 0 but 
-        # we have an order_id and expected_quote, the order likely went through.
-        # Estimate fill from expected values to prevent duplicate orders!
+        # CRITICAL FIX: For orders where filled_size is 0 but we have an order_id,
+        # the order was placed successfully. For limit orders, it may not fill immediately.
+        # Estimate fill from expected values to prevent position tracking failures!
         estimated_qty = None
         estimated_price = None
-        if success and filled_size <= 0 and expected_quote > 0:
-            # Market order succeeded but no fill data yet - estimate!
-            # This prevents the "20 orders" bug where we don't create a position
-            # Use actual market price passed in, NOT a hardcoded placeholder!
-            if market_price > 0:
-                estimated_price = market_price
-                estimated_qty = expected_quote / market_price
-                logger.warning("[ORDER] Order %s succeeded but no fill data - using market price $%.4f", order_id, market_price)
-            else:
-                logger.error("[ORDER] Order %s succeeded but no fill data AND no market price - SKIPPING", order_id)
-                return OrderResult(success=False, error="No fill data and no market price")
+        if success and filled_size <= 0:
+            if expected_quote > 0:
+                # Market order succeeded but no fill data yet - estimate!
+                if market_price > 0:
+                    estimated_price = market_price
+                    estimated_qty = expected_quote / market_price
+                    logger.warning("[ORDER] Market order %s succeeded but no fill data - using market price $%.4f", order_id, market_price)
+                else:
+                    logger.error("[ORDER] Market order %s succeeded but no fill data AND no market price - SKIPPING", order_id)
+                    return OrderResult(success=False, error="No fill data and no market price")
+            elif expected_qty > 0:
+                # LIMIT order placed successfully - use expected qty and market price
+                # The order is on the books and will fill (or has filled) at limit price
+                if market_price > 0:
+                    estimated_price = market_price
+                    estimated_qty = expected_qty
+                    logger.info("[ORDER] Limit order %s placed successfully - tracking with qty=%.4f @ $%.4f", order_id, expected_qty, market_price)
+                else:
+                    logger.error("[ORDER] Limit order %s placed but no market price for tracking - SKIPPING", order_id)
+                    return OrderResult(success=False, error="Limit order placed but no market price")
         
         return OrderResult(
             success=success,

@@ -22,11 +22,15 @@ class BasePositionPersistence(ABC, IPositionPersistence):
     - Automatic backup before write
     - Corruption recovery from backup
     - Proper error logging (no silent failures)
+    - Smart persistence with dirty flag (only save when changed)
     """
 
     def __init__(self, path: Path):
         self.positions_file = path
         self.backup_file = path.with_suffix(".json.bak")
+        self._last_saved_hash: Optional[str] = None  # Track last saved state
+        self._last_save_time: Optional[datetime] = None
+        self._save_interval_s: float = 30.0  # Min seconds between saves (unless forced)
 
     def _ensure_dir(self) -> None:
         self.positions_file.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +145,14 @@ class BasePositionPersistence(ABC, IPositionPersistence):
             "peak_confidence": getattr(pos, "peak_confidence", 0.0),
             "ml_score_entry": getattr(pos, "ml_score_entry", 0.0),
             "ml_score_current": getattr(pos, "ml_score_current", 0.0),
+            "stop_order_id": getattr(pos, "stop_order_id", None),
+            "entry_order_id": getattr(pos, "entry_order_id", None),
+            "last_modified": getattr(pos, "last_modified", None).isoformat() if getattr(pos, "last_modified", None) else None,
+            "last_stop_update": getattr(pos, "last_stop_update", None).isoformat() if getattr(pos, "last_stop_update", None) else None,
+            "tier": getattr(pos, "tier", "normal"),
+            "entry_score": getattr(pos, "entry_score", 0.0),
+            "flags": getattr(pos, "flags", ""),
+            "source_strategy": getattr(pos, "source_strategy", ""),
         }
 
     def _deserialize_position(self, pos_data: dict) -> Position:
@@ -169,15 +181,61 @@ class BasePositionPersistence(ABC, IPositionPersistence):
             peak_confidence=float(pos_data.get("peak_confidence", 70.0)),
             ml_score_entry=float(pos_data.get("ml_score_entry", 0.0)),
             ml_score_current=float(pos_data.get("ml_score_current", 0.0)),
+            stop_order_id=pos_data.get("stop_order_id"),
+            entry_order_id=pos_data.get("entry_order_id"),
+            last_modified=datetime.fromisoformat(pos_data["last_modified"]) if pos_data.get("last_modified") else None,
+            last_stop_update=datetime.fromisoformat(pos_data["last_stop_update"]) if pos_data.get("last_stop_update") else None,
+            tier=pos_data.get("tier", "normal"),
+            entry_score=float(pos_data.get("entry_score", 0.0)),
+            flags=pos_data.get("flags", ""),
+            source_strategy=pos_data.get("source_strategy", ""),
         )
 
-    def save_positions(self, positions: dict[str, Position]) -> None:
-        """Persist positions atomically."""
+    def _compute_hash(self, data: dict) -> str:
+        """Compute hash of data for change detection."""
+        import hashlib
+        return hashlib.md5(json.dumps(data, sort_keys=True, default=str).encode()).hexdigest()
+    
+    def save_positions(self, positions: dict[str, Position], force: bool = False) -> bool:
+        """
+        Persist positions atomically with smart change detection.
+        
+        Args:
+            positions: Dict of symbol -> Position
+            force: If True, save even if no changes detected
+            
+        Returns:
+            True if saved, False if skipped (no changes)
+        """
         data = {symbol: self._serialize_position(pos) for symbol, pos in positions.items()}
+        
+        # Check if data actually changed
+        current_hash = self._compute_hash(data)
+        if not force and self._last_saved_hash == current_hash:
+            logger.debug("[PERSIST] Skipped save - no changes (hash match)")
+            return False
+        
+        # Check save interval (avoid excessive writes)
+        now = datetime.now(timezone.utc)
+        if not force and self._last_save_time:
+            elapsed = (now - self._last_save_time).total_seconds()
+            if elapsed < self._save_interval_s and self._last_saved_hash:
+                logger.debug("[PERSIST] Skipped save - too soon (%.1fs < %.1fs)", 
+                           elapsed, self._save_interval_s)
+                return False
+        
         if self._atomic_write(data):
-            logger.debug("[PERSIST] Saved %d positions", len(positions))
+            self._last_saved_hash = current_hash
+            self._last_save_time = now
+            logger.debug("[PERSIST] Saved %d positions (hash=%s)", len(positions), current_hash[:8])
+            return True
         else:
             logger.error("[PERSIST] FAILED to save %d positions", len(positions))
+            return False
+    
+    def save_positions_force(self, positions: dict[str, Position]) -> bool:
+        """Force save positions regardless of change detection."""
+        return self.save_positions(positions, force=True)
 
     def load_positions(self) -> dict[str, Position]:
         """Load positions with corruption recovery."""

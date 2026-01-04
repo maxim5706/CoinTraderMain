@@ -1,7 +1,7 @@
 """Simple dependency injection container for trading components."""
 
 from core.mode_configs import BaseTradingConfig, TradingMode
-from core.trading_factory import TradingFactory
+from execution.trading_factory import TradingFactory
 from core.trading_interfaces import (
     IExecutor,
     IPortfolioManager,
@@ -44,3 +44,13 @@ class TradingContainer:
         if "stops" not in self._instances:
             self._instances["stops"] = TradingFactory.create_stop_manager(self.mode, self.config)
         return self._instances["stops"]  # type: ignore[return-value]
+
+    def update_config(self, config: BaseTradingConfig) -> None:
+        """Update config and propagate to existing instances."""
+        self.config = config
+        for instance in self._instances.values():
+            if hasattr(instance, "update_config"):
+                instance.update_config(config)
+                continue
+            if hasattr(instance, "config"):
+                setattr(instance, "config", config)

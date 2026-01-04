@@ -23,6 +23,11 @@ class RejectionTracker:
     
     def __init__(self, state: Optional["BotState"] = None):
         self.state = state
+
+        # De-spam recent_signals: remember the last (symbol, gate, detail) emitted.
+        self._last_display_evt: dict[tuple[str, str, str], datetime] = {}
+        self._display_dedupe_seconds: float = 8.0
+        self._maxpos_dedupe_seconds: float = 60.0
         
         # Local counters (in case state is None)
         self._rejections = {
@@ -91,6 +96,17 @@ class RejectionTracker:
         try:
             detail_str = details.get("reason", reason) if details else reason
             self.state.last_rejection = (symbol, reason, str(detail_str))
+
+            # Rate-limit identical gate events to avoid confusing UI spam.
+            now = datetime.now(timezone.utc)
+            key = (symbol or "", reason or "", str(detail_str))
+            last = self._last_display_evt.get(key)
+            dedupe_seconds = self._display_dedupe_seconds
+            if "Max positions" in str(detail_str):
+                dedupe_seconds = self._maxpos_dedupe_seconds
+            if last and (now - last).total_seconds() < dedupe_seconds:
+                return
+            self._last_display_evt[key] = now
             
             # Track in recent signals stream as blocked event
             evt = make_signal_event(

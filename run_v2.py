@@ -19,22 +19,41 @@ import argparse
 import json
 import os
 import signal as sig
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from core.logging_utils import get_logger, setup_logging
 from core.config import settings
-from core.mode_config import ConfigurationManager
+from core.mode_config import ConfigurationManager, RuntimeConfigStore, sanitize_config_snapshot
 from core.mode_configs import TradingMode
 from core.profiles import apply_profile
-from core.models import Signal, SignalType, CandleBuffer
+from core.models import Intent, Signal, SignalType, CandleBuffer
 from core.logger import log_candle_1m, log_burst, log_signal, utc_iso_str
 from core.trading_container import TradingContainer
 from core.events import MarketEventBus, TickEvent, CandleEvent, OrderEvent
 
 setup_logging()
 logger = get_logger(__name__)
+
+# Prevent duplicate bot processes
+def _check_duplicate():
+    """Exit if another run_v2.py is already running."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "run_v2.py.*--mode"],
+            capture_output=True, text=True
+        )
+        pids = [p for p in result.stdout.strip().split('\n') if p and p != str(os.getpid())]
+        if pids:
+            logger.error("Another bot already running (PIDs: %s). Exiting.", pids)
+            sys.exit(1)
+    except Exception as e:
+        logger.warning("Could not check for duplicates: %s", e)
+
+_check_duplicate()
 
 # Apply profile overrides BEFORE anything else uses settings
 apply_profile(settings.profile, settings)
@@ -43,6 +62,7 @@ from core.state import (
     CurrentSignal, PositionDisplay
 )
 from core.helpers import safe_features, make_signal_event, run_preflight
+from core.config_manager import get_config_manager
 
 from datafeeds.collectors import CandleCollector, DynamicBackfill, MockCollector, RestPoller
 from datafeeds.coinbase_fetcher import fetch_history_windowed
@@ -50,24 +70,27 @@ from datafeeds.universe import SymbolScanner, tier_scheduler
 from core.candle_store import candle_store
 from logic.strategies.orchestrator import StrategyOrchestrator
 from execution.order_router import OrderRouter
-from ui.dashboard_v2 import DashboardV2
 from core.helpers.preflight import test_api_keys
+from core.bot_controller import get_controller
 
 
 class TradingBotV2:
     """Main trading bot orchestrator with three-clock architecture."""
     
     def __init__(self):
-        self.dashboard = DashboardV2()
+        self._config_manager = get_config_manager()
         self.mode = ConfigurationManager.get_trading_mode()
-        self.config = ConfigurationManager.get_config_for_mode(self.mode)
+        self.config_store = RuntimeConfigStore(self.mode)
+        self.start_config = self.config_store.start_config
+        self.config = self.config_store.running_config
+        self._config_manager.register_callback(self._on_runtime_config_update)
+        self._last_config_reload = datetime.now(timezone.utc)
         self.orchestrator = StrategyOrchestrator()
         self.events = MarketEventBus(self.mode)
         self.scanner = SymbolScanner()
         self.collector: Optional[CandleCollector | MockCollector] = None
         self.router: Optional[OrderRouter] = None
         self._last_5m_counts: dict[str, int] = {}
-        self._last_strategy_signals: dict[str, any] = {}  # Raw StrategySignal per symbol
         
         # Track latest spread per symbol for FAST mode
         self._latest_spreads: dict[str, float] = {}
@@ -95,7 +118,6 @@ class TradingBotV2:
         self._clock_a_task: Optional[asyncio.Task] = None  # WebSocket
         self._clock_b_task: Optional[asyncio.Task] = None  # Every minute
         self._clock_c_task: Optional[asyncio.Task] = None  # Every 30 min
-        self._display_task: Optional[asyncio.Task] = None
         self._poller_task: Optional[asyncio.Task] = None   # REST poller
         self._backfill_task: Optional[asyncio.Task] = None # Dynamic backfill
         
@@ -104,12 +126,15 @@ class TradingBotV2:
         self.backfill_service: Optional[DynamicBackfill] = None
         
         # Shared state for dashboard
-        self.state = self.dashboard.state
+        self.state = BotState()
         self.state.mode = self.mode.value
         self.state.profile = getattr(settings, "profile", "prod")
         self.state.daily_loss_limit_usd = settings.daily_max_loss_usd
         self.state.startup_time = datetime.now(timezone.utc)
-        self.state.paper_balance = getattr(settings, "paper_start_balance", 1000.0)
+        self.state.paper_balance = getattr(settings, "paper_start_balance_usd", 1000.0)
+        self.state.config_start = sanitize_config_snapshot(self.start_config)
+        self.state.config_running = sanitize_config_snapshot(self.config)
+        self.state.config_last_refreshed = datetime.now(timezone.utc)
         self.events.on_order(self._on_order_event)
     
     def _get_price(self, symbol: str) -> float:
@@ -125,21 +150,56 @@ class TradingBotV2:
         except Exception:
             pass
     
+    def _start_web_server(self, port: int = 8080):
+        """Start web dashboard server in background thread."""
+        import threading
+        from ui.web_server import run_server, set_bot_state
+        
+        # Share state with web server
+        set_bot_state(self.state)
+        
+        # Start in daemon thread
+        self._web_thread = threading.Thread(
+            target=run_server,
+            kwargs={'port': port},
+            daemon=True
+        )
+        self._web_thread.start()
+        logger.info("[BOT] Web dashboard started at http://localhost:%s", port)
+
+    def _on_runtime_config_update(self, _runtime_config) -> None:
+        """Apply runtime config changes to running components."""
+        self._refresh_running_config(source="runtime_update")
+
+    def _refresh_running_config(self, source: str = "runtime_update") -> None:
+        """Refresh the running config snapshot from current settings."""
+        self.config = self.config_store.refresh()
+        if self.router:
+            self.router.update_config(self.config)
+        self.state.daily_loss_limit_usd = settings.daily_max_loss_usd
+        self.state.config_running = sanitize_config_snapshot(self.config)
+        self.state.config_last_refreshed = datetime.now(timezone.utc)
+        logger.info("[CONFIG] Running config refreshed (%s)", source)
+    
     async def start(self):
         """Start the bot with three-clock architecture."""
         
-        # === PREFLIGHT CHECK ===
+        # NOTE: Web server removed from bot - dashboard (COIN) handles it
+        # Bot only writes state to bot_state.json, dashboard reads it
+        
+        # === PHASE: PREFLIGHT ===
+        self.state.phase = "preflight"
         api_ok, api_msg = test_api_keys()
         self.state.api_ok = api_ok
         self.state.api_msg = api_msg
-        
-        self.dashboard.print_startup(api_ok, api_msg)
         
         if not api_ok and self.mode == TradingMode.LIVE:
             logger.error(
                 "Cannot run in LIVE mode without valid API keys. "
                 "Fix .env or switch to TRADING_MODE=paper."
             )
+            self.state.phase = "error"
+            self.state.api_msg = f"STARTUP FAILED: {api_msg}"
             return
         
         if not api_ok and self.mode == TradingMode.PAPER:
@@ -180,11 +240,17 @@ class TradingBotV2:
             # Mock is always "connected"
             self.state.ws_ok = True
         
-        # Backfill recent history to skip warmup lag
-        self._backfill_initial(stream_symbols)
+        # === START STATE WRITER EARLY (so dashboard works during backfill) ===
+        from core.shared_state import StateWriter
+        self._state_writer = StateWriter(self.state)
+        self._state_writer.start()
+        logger.info("[BOT] State writer started early for dashboard")
         
-        # Rehydrate candles from persistent storage
-        self._rehydrate_from_store(stream_symbols)
+        # === PHASE: BACKFILL ===
+        # Note: Rehydrate from parquet happens in _rehydrate_from_store after router init
+        # This keeps startup fast - we backfill first, then load cached data
+        self.state.phase = "backfill"
+        self._backfill_initial(stream_symbols)
     
         # Initialize order router with mode-specific dependencies
         container = TradingContainer(self.mode, self.config)
@@ -203,6 +269,45 @@ class TradingBotV2:
         # Connect candle collector for thesis invalidation checks
         if self.collector:
             self.router.set_candle_collector(self.collector)
+
+        # Rehydrate candles from persistent storage (limit scope for fast startup)
+        try:
+            position_symbols = list(self.router.positions.keys()) if self.router else []
+            starter_symbols = list(stream_symbols[:15])
+            rehydrate_symbols = list(dict.fromkeys(position_symbols + starter_symbols))
+            self._rehydrate_from_store(rehydrate_symbols)
+        except Exception:
+            logger.warning("[STORE] Rehydrate error", exc_info=True)
+        
+        # === PHASE: SYNCING ===
+        self.state.phase = "syncing"
+        # Sync positions from exchange on startup (LIVE mode only)
+        if self.mode == TradingMode.LIVE and self.router._exchange_sync._client:
+            logger.info("[BOT] Verifying position sync from exchange...")
+            try:
+                from core.persistence import sync_with_exchange
+                old_count = len(self.router.positions)
+                # sync_with_exchange modifies positions dict in place
+                sync_with_exchange(
+                    self.router._exchange_sync._client,
+                    self.router.positions,
+                    quiet=True  # Already logged in OrderRouter
+                )
+                for sym, pos in self.router.positions.items():
+                    if not self.router.position_registry.has_position(sym):
+                        self.router.position_registry.add_position(pos)
+                new_count = len(self.router.positions)
+                if new_count != old_count:
+                    logger.info("[BOT] Position sync adjusted: %d → %d", old_count, new_count)
+                    self.router.persistence.save_positions(self.router.positions)
+            except Exception as e:
+                logger.error("[BOT] Failed to sync positions from exchange: %s", e)
+        
+        # Update positions state and start state writer AFTER positions are synced
+        self._update_positions_state()
+        logger.info("[BOT] Updated state.positions: %d entries", len(self.state.positions))
+        
+        # State writer already started earlier (before backfill)
         
         # Check if we need to auto-rebalance (over budget)
         await self._check_and_rebalance()
@@ -216,11 +321,13 @@ class TradingBotV2:
         # Run preflight checks (informational)
         self._run_preflight_checks()
         
+        # === PHASE: TRADING ===
+        self.state.phase = "trading"
+        
         # Start all clocks
         self._clock_a_task = asyncio.create_task(self.collector.start())  # WebSocket
         self._clock_b_task = asyncio.create_task(self._clock_b_loop())    # Every minute
         self._clock_c_task = asyncio.create_task(self._clock_c_loop())    # Every 30 min
-        self._display_task = asyncio.create_task(self._display_loop())
         
         # Start tiered polling services
         if self.rest_poller:
@@ -236,8 +343,7 @@ class TradingBotV2:
             await asyncio.gather(
                 self._clock_a_task,
                 self._clock_b_task,
-                self._clock_c_task,
-                self._display_task
+                self._clock_c_task
             )
         except asyncio.CancelledError:
             pass
@@ -278,8 +384,6 @@ class TradingBotV2:
             "[STORE] Flushed %s candles to disk",
             candle_store.candles_written
         )
-        
-        self.dashboard.print_shutdown()
     
     async def _check_and_rebalance(self):
         """Check if over budget and offer to rebalance at startup."""
@@ -347,8 +451,15 @@ class TradingBotV2:
             exposure = sum(p.cost_basis for p in self.router.positions.values())
             stats["portfolio"] = portfolio
             stats["available"] = portfolio * settings.portfolio_max_exposure_pct - exposure
-        
-        self.dashboard.print_startup_complete(stats)
+
+        logger.info(
+            "[BOT] Startup complete | eligible=%s ws=%s rest=%s positions=%s portfolio=%.2f",
+            stats.get("eligible"),
+            stats.get("ws_count"),
+            stats.get("rest_count"),
+            stats.get("positions"),
+            stats.get("portfolio", 0.0),
+        )
     
     def _on_candle(self, symbol: str, candle):
         """Callback when new candle forms (Clock A)."""
@@ -396,6 +507,17 @@ class TradingBotV2:
         
         indicators = feature_engine.update(symbol, candle, spread_bps, vwap)
         intelligence.update_live_indicators(symbol, indicators)
+        
+        # Feed sector tracker with trend data
+        if indicators:
+            if isinstance(indicators, dict):
+                trend_1h = indicators.get("trend_1h", 0.0)
+                trend_5m = indicators.get("trend_5m", 0.0)
+            else:
+                trend_1h = getattr(indicators, "trend_1h", 0.0)
+                trend_5m = getattr(indicators, "trend_5m", 0.0)
+            intelligence.update_symbol_trend(symbol, trend_1h, trend_5m, candle.close)
+        
         if indicators:
             self.state.heartbeat_features = datetime.now(timezone.utc)
             ml = intelligence.get_live_ml(symbol)
@@ -618,9 +740,11 @@ class TradingBotV2:
         total_5m = 0
         success_count = 0
         
-        # LIMIT symbols to avoid rate limits - prioritize hot/important symbols
-        # Only backfill top 10 symbols, rest will warm up via WebSocket
-        symbols_to_backfill = symbols[:10]
+        # Prioritize position symbols first, then top symbols
+        # Increased limit since WebSocket will handle rest anyway
+        position_symbols = list(self.router.positions.keys()) if self.router else []
+        priority_symbols = list(dict.fromkeys(position_symbols + symbols))  # Dedup preserving order
+        symbols_to_backfill = priority_symbols[:5]  # Fast startup - 5 symbols only
         num_symbols = len(symbols_to_backfill)
         
         logger.info("[BACKFILL] Starting initial backfill for %d symbols (limited from %d)", num_symbols, len(symbols))
@@ -655,8 +779,13 @@ class TradingBotV2:
                     buffer.add_1m(candle)
                     total_1m += 1
                 
+                # Seed FeatureState from backfilled candles (last 20 to warm up indicators)
+                from logic.live_features import feature_engine
+                for candle in history_1m[-20:]:
+                    feature_engine.update(sym, candle, 0.0, 0.0)
+                
                 # Rate limit pause between API calls
-                _time.sleep(1.0)  # Increased to 1s
+                _time.sleep(0.5)  # Reduced to 0.5s for faster backfill
                 
                 # Fetch 5m candles directly (faster than aggregating from 1m)
                 history_5m = self.scanner.fetch_history(sym, granularity_s=300, lookback_minutes=minutes_5m)
@@ -664,8 +793,22 @@ class TradingBotV2:
                     buffer.add_5m_direct(candle)
                     total_5m += 1
                 
-                # Skip 1H and 1D candles on startup to reduce API load
-                # These will be fetched by DynamicBackfill later if needed
+                # Fetch 1H candles for trend indicators (48 hours)
+                _time.sleep(0.5)
+                history_1h = self.scanner.fetch_history(sym, granularity_s=3600, lookback_minutes=48*60)
+                if history_1h:
+                    buffer.candles_1h = history_1h[-48:]
+                
+                # Fetch 1D candles for daily trend (30 days)
+                _time.sleep(0.5)
+                history_1d = self.scanner.fetch_history(sym, granularity_s=86400, lookback_minutes=30*24*60)
+                if history_1d:
+                    buffer.candles_1d = history_1d[-30:]
+                
+                # Update feature engine with higher TF data
+                if history_1h or history_1d:
+                    from logic.live_features import feature_engine
+                    feature_engine.update_higher_tf(sym, history_1h or [], history_1d or [])
                 
                 if history_1m or history_5m:
                     success_count += 1
@@ -708,6 +851,39 @@ class TradingBotV2:
                         len(buffer.candles_5m)
                     )
     
+    def _rehydrate_from_store_early(self, symbols: list[str]) -> int:
+        """
+        Rehydrate candle buffers from persistent storage BEFORE API backfill.
+        Returns count of symbols successfully warmed from cache.
+        """
+        warm_count = 0
+        try:
+            stored = candle_store.rehydrate_buffers(symbols, max_age_hours=4)
+            
+            for sym, data in stored.items():
+                buffer = self.collector.get_buffer(sym) if self.collector else None
+                if buffer is None:
+                    continue
+                
+                candles_1m = data.get("1m", [])
+                candles_5m = data.get("5m", [])
+                
+                # Add stored candles to buffer
+                for candle in candles_1m:
+                    buffer.add_1m(candle)
+                for candle in candles_5m:
+                    buffer.add_5m_direct(candle)
+                
+                # Count as warm if we have enough data
+                if len(candles_1m) >= 30:
+                    warm_count += 1
+                    
+            logger.info("[REHYDRATE] Loaded %d symbols from cache (warm: %d)", len(stored), warm_count)
+        except Exception as e:
+            logger.warning("[REHYDRATE] Error loading from cache: %s", e)
+        
+        return warm_count
+
     def _rehydrate_from_store(self, symbols: list[str]):
         """Rehydrate candle buffers from persistent storage on startup."""
         try:
@@ -932,6 +1108,10 @@ class TradingBotV2:
                     self.state.candles_last_5s = 0
                     self.state.events_last_5s = 0
                     last_counter_reset = datetime.now(timezone.utc)
+                
+                if (datetime.now(timezone.utc) - self._last_config_reload).total_seconds() >= 10:
+                    self._config_manager.reload_if_changed()
+                    self._last_config_reload = datetime.now(timezone.utc)
 
                 # Surface warm/cold status for dashboard and logging
                 tier_stats = tier_scheduler.get_stats()
@@ -1039,33 +1219,23 @@ class TradingBotV2:
                         
                         try:
                             snap = portfolio_tracker.get_snapshot()
-                            self.router._portfolio_snapshot = snap
-                            self.router._last_snapshot_at = datetime.now(timezone.utc)
-                            self.router._sync_degraded = False
+                            if snap:
+                                self.router._exchange_sync._portfolio_snapshot = snap
+                                self.router._exchange_sync._last_snapshot_at = datetime.now(timezone.utc)
+                                self.router._exchange_sync._sync_degraded = False
+                                # Update state with portfolio values
+                                self.state.portfolio_value = snap.total_value
+                                self.state.cash_balance = snap.total_cash
+                                self.state.holdings_value = snap.total_crypto
                             self._last_portfolio_refresh = datetime.now(timezone.utc)
                             
                             # Sync positions with exchange (detect manual trades)
-                            if self.router._client:
-                                old_count = len(self.router.positions)
-                                self.router.positions = sync_with_exchange(
-                                    self.router._client, 
-                                    self.router.positions
-                                )
-                                new_count = len(self.router.positions)
-                                if new_count != old_count:
-                                    logger.info(
-                                        "[SYNC] Positions changed: %s → %s",
-                                        old_count,
-                                        new_count,
-                                    )
-                                
-                                # Also update _exchange_holdings from synced positions
-                                # This ensures we don't buy something we already hold
-                                self.router._exchange_holdings = {
-                                    p.symbol: p.size_usd 
-                                    for p in self.router.positions.values()
-                                    if p.size_usd >= 1.0
-                                }
+                            try:
+                                client = getattr(getattr(self.router, "_exchange_sync", None), "_client", None)
+                                if client:
+                                    self.router._sync_positions_from_exchange()
+                            except Exception:
+                                logger.debug("Position sync refresh failed", exc_info=True)
                             
                             # Log PnL snapshot every 5 minutes
                             if (datetime.now(timezone.utc) - self._last_pnl_log).total_seconds() >= 300:
@@ -1167,6 +1337,17 @@ class TradingBotV2:
         
         # Pass recent signal symbols to scanner manager
         self._scanner_manager.update_leaderboard(recent_signal_symbols=list(self._recent_signal_symbols.keys()))
+        
+        # Update predictive ranker with MTF data (every 30 seconds)
+        if not hasattr(self, '_last_predict_update'):
+            self._last_predict_update = now
+        if (now - self._last_predict_update).total_seconds() >= 30:
+            self._last_predict_update = now
+            predict_status = self._scanner_manager.update_predictive_ranker(
+                get_buffer_func=lambda s: self.collector.get_buffer(s) if self.collector else None
+            )
+            if predict_status.get("actionable", 0) > 0:
+                self.state.predictive_plays = predict_status.get("top_plays", [])
 
     def _write_status_snapshot(self):
         """Write lightweight BotState snapshot for external health checks."""
@@ -1290,8 +1471,6 @@ class TradingBotV2:
             strat_signal = self.orchestrator.analyze(symbol, buffer, features, market_context)
             if strat_signal is None:
                 self._last_strategy_signals.pop(symbol, None)
-                # Track as "no signal" - strategy didn't find entry opportunity
-                self.state.rejections_score += 1
                 # If focus symbol has no signal, clear stale signal
                 if symbol == focus_symbol:
                     self._clear_signal_state("Scanning...")
@@ -1300,7 +1479,6 @@ class TradingBotV2:
             signal = self._adapt_strategy_signal(symbol, strat_signal, features, market_context, buffer)
             if signal is None:
                 self._last_strategy_signals.pop(symbol, None)
-                self.state.rejections_score += 1
                 # If focus symbol has no valid signal, clear stale signal
                 if symbol == focus_symbol:
                     self._clear_signal_state("No entry setup")
@@ -1316,22 +1494,6 @@ class TradingBotV2:
             score = int(strat_signal.edge_score_base)
             strat_name = strat_signal.strategy_id
             self.state.log(f"{sym_short} {strat_name} score={score}", "STRAT")
-            
-            # Track recent signals for TUI visibility
-            try:
-                spread = self._latest_spreads.get(symbol, 0.0)
-                evt = make_signal_event(
-                    datetime.now(timezone.utc),
-                    symbol,
-                    strat_name,
-                    score,
-                    spread,
-                    True,
-                    strat_signal.reason or "signal",
-                )
-                self.state.recent_signals.appendleft(evt)
-            except Exception:
-                pass
             
             # Log to JSONL for ML training
             try:
@@ -1400,7 +1562,7 @@ class TradingBotV2:
                     # Already holding - track as limit rejection
                     self.state.rejections_limits += 1
                 else:
-                    position = await self.router.open_position(signal)
+                    position = await self.router.open_position(Intent.from_signal(signal))
                     if position:
                         self.orchestrator.reset(symbol)
                         if symbol == focus_symbol:
@@ -1419,6 +1581,7 @@ class TradingBotV2:
         self.router.update_all_position_confidence()
         
         # Check for exits on all positions
+        self.state.heartbeat_order_router = datetime.now(timezone.utc)
         for symbol in list(self.router.positions.keys()):
             result = await self.router.check_exits(symbol)
             if result:
@@ -1507,7 +1670,7 @@ class TradingBotV2:
         
         confidence = min(max(strat_signal.edge_score_base / 100, 0.0), 1.0)
         
-        return Signal(
+        signal = Signal(
             symbol=symbol,
             strategy_id=strat_signal.strategy_id,
             type=SignalType.FLAG_BREAKOUT,
@@ -1525,6 +1688,8 @@ class TradingBotV2:
             spread_bps=spread_bps,
             tier=tier,
         )
+        signal.confluence_count = getattr(strat_signal, "confluence_count", 1)
+        return signal
     
     def _update_focus_coin_basic(self, symbol: str, buffer: CandleBuffer):
         """Update basic focus coin info (always called, even without signal)."""
@@ -1686,6 +1851,7 @@ class TradingBotV2:
                 units=pos.size_qty,
                 size_usd=pos.size_usd,
                 entry_price=pos.entry_price,
+                current_price=price,
                 stop_price=pos.stop_price,
                 tp1_price=pos.tp1_price,
                 tp2_price=pos.tp2_price,
@@ -1695,6 +1861,29 @@ class TradingBotV2:
             ))
         
         self.state.positions = positions
+        self.state.positions_display = positions  # For web_server.py compatibility
+        
+        # Dust positions and exchange holdings for dashboard reconciliation
+        if self.mode == TradingMode.LIVE and hasattr(self.router, '_exchange_sync'):
+            es = self.router._exchange_sync
+            tracked_symbols = set(self.router.positions.keys())
+            
+            # Get dust positions: exchange holdings below $1 that we're not actively tracking
+            dust = []
+            for symbol, detail in es.holdings_detail.items():
+                value_usd = detail.get('value_usd', 0)
+                if value_usd < 1.0 and symbol not in tracked_symbols:
+                    dust.append({
+                        'symbol': symbol,
+                        'qty': detail.get('quantity', 0),
+                        'value_usd': value_usd,
+                        'asset': detail.get('asset', symbol.replace('-USD', '')),
+                    })
+            self.state.dust_positions = dust
+            
+            # Get exchange holdings
+            self.state.exchange_holdings = dict(es.exchange_holdings) if es.exchange_holdings else {}
+            self.state.max_positions = self.router.position_registry.limits.max_positions if hasattr(self.router, 'position_registry') else 15
         
         # Update PnL from REAL Coinbase Portfolio API
         self.state.realized_pnl = self.router.daily_stats.total_pnl
@@ -1780,6 +1969,21 @@ class TradingBotV2:
         self.state.exposure_pct = (bot_exposure / bot_budget * 100) if bot_budget > 0 else 0
         self.state.max_exposure_pct = settings.portfolio_max_exposure_pct * 100
         
+        # Record portfolio history for 1h/1d/5d tracking
+        from core.portfolio_history import record_balance, get_portfolio_summary
+        record_balance(
+            self.state.portfolio_value,
+            self.state.cash_balance,
+            self.state.holdings_value,
+            len(self.router.positions)
+        )
+        # Store summary in state for dashboard
+        summary = get_portfolio_summary(self.state.portfolio_value)
+        self.state.portfolio_change_1h = summary.get("change_1h")
+        self.state.portfolio_change_1d = summary.get("change_1d")
+        self.state.portfolio_change_5d = summary.get("change_5d")
+        self.state.portfolio_ath = summary.get("all_time_high", 0)
+        
         # Balances for UI separation
         if self.mode == TradingMode.PAPER:
             self.state.paper_balance_usd = self.router._usd_balance
@@ -1808,10 +2012,11 @@ class TradingBotV2:
             self.state.rest_429s = poller_stats.get("total_429s", 0)
             self.state.rest_rate_degraded = poller_stats.get("is_degraded", False)
 
-        # BTC regime from intelligence
+        # BTC regime and sector tracking from intelligence
         from logic.intelligence import intelligence
         self.state.btc_regime = intelligence._market_regime
         self.state.btc_trend_1h = intelligence._btc_trend_1h
+        self.state.sector_summary = intelligence.get_sector_summary()
         
         # ML cache freshness (global)
         total_ml = len(intelligence.live_ml)
@@ -1839,40 +2044,6 @@ class TradingBotV2:
         if self.state.kill_switch:
             self.state.kill_reason = f"Daily loss limit (${settings.daily_max_loss_usd})"
     
-    async def _display_loop(self):
-        """Update display periodically using Textual TUI."""
-        from core.logging_utils import suppress_console_logging
-        
-        # Suppress console logging IMMEDIATELY (logs still go to file)
-        suppress_console_logging(True)
-        
-        await asyncio.sleep(2)
-        
-        try:
-            # Try new Textual TUI first
-            try:
-                from ui.tui_live import run_tui_async
-                await run_tui_async(self.state)
-            except ImportError:
-                # Fallback to old Rich dashboard
-                from rich.live import Live
-                with Live(
-                    self.dashboard.render_full(),
-                    console=self.dashboard.console,
-                    refresh_per_second=2,
-                    screen=True
-                ) as live:
-                    while self._running:
-                        try:
-                            live.update(self.dashboard.render_full())
-                            await asyncio.sleep(0.5)
-                        except Exception:
-                            await asyncio.sleep(1)
-        finally:
-            # Restore console logging when TUI exits
-            suppress_console_logging(False)
-
-
 def main():
     """Main entry point with command line mode switching."""
     import sys
@@ -1900,6 +2071,8 @@ Examples:
                        help='Run validation checks before starting')
     parser.add_argument('--preflight-only', action='store_true',
                        help='Run preflight checks and exit without starting the bot')
+    parser.add_argument('--launcher', action='store_true',
+                       help='Indicates bot is managed by launcher (enables controller integration)')
     
     args = parser.parse_args()
     
@@ -1962,6 +2135,12 @@ Examples:
     bot = TradingBotV2()
     shutdown_requested = False
     
+    # Controller integration for launcher-managed mode
+    controller = get_controller() if args.launcher else None
+    if controller:
+        controller.set_status("starting")
+        logger.info("[BOT] Running in launcher-managed mode")
+    
     def handle_interrupt(signum, frame):
         nonlocal shutdown_requested
         if shutdown_requested:
@@ -1976,12 +2155,18 @@ Examples:
     sig.signal(sig.SIGTERM, handle_interrupt)
     
     try:
+        if controller:
+            controller.set_status("running")
         asyncio.run(bot.start())
     except KeyboardInterrupt:
         logger.info("[BOT] Exiting...")
     except Exception as e:
         logger.exception("[BOT] Error: %s", e)
+        if controller:
+            controller.set_status("error", error=str(e))
     finally:
+        if controller:
+            controller.set_status("stopped")
         logger.info("[BOT] Goodbye!")
         sys.exit(0)
 

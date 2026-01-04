@@ -103,10 +103,46 @@ class OrderManager:
         self._orders: Dict[str, ManagedOrder] = {}  # order_id -> order
         self._position_orders: Dict[str, PositionOrders] = {}  # symbol -> orders
         self._last_sync: Optional[datetime] = None
+        self._available_base_cache: Dict[str, tuple[float, float]] = {}
+        self._available_base_cache_ttl_s: float = 10.0  # Reduced from 30s to avoid stale data
         
     def init_client(self, client):
         """Set the Coinbase client."""
         self._client = client
+
+    def _get_available_base_qty(self, base_asset: str, force_refresh: bool = False) -> float:
+        """Get available balance for base asset. Use force_refresh=True for critical operations like stop orders."""
+        if not self._client or not base_asset:
+            return 0.0
+
+        now = time.time()
+        cached = self._available_base_cache.get(base_asset)
+        if not force_refresh and cached and (now - cached[1]) < self._available_base_cache_ttl_s:
+            return float(cached[0])
+
+        available = 0.0
+        try:
+            accounts = self._client.get_accounts()
+            for acct in getattr(accounts, "accounts", []) or []:
+                if isinstance(acct, dict):
+                    currency = acct.get("currency", "")
+                    bal = acct.get("available_balance", {})
+                    value = bal.get("value", 0) if isinstance(bal, dict) else 0
+                else:
+                    currency = getattr(acct, "currency", "")
+                    bal = getattr(acct, "available_balance", {})
+                    value = bal.get("value", 0) if isinstance(bal, dict) else getattr(bal, "value", 0)
+                if currency == base_asset:
+                    try:
+                        available = float(value or 0)
+                    except Exception:
+                        available = 0.0
+                    break
+        except Exception:
+            available = 0.0
+
+        self._available_base_cache[base_asset] = (available, now)
+        return float(available)
         
     def sync_with_exchange(self) -> int:
         """
@@ -144,6 +180,9 @@ class OrderManager:
             # Identify stop orders and link to positions
             self._link_stop_orders()
             
+            # Persist orders to disk for comparison
+            self._persist_orders()
+            
             return synced
             
         except Exception as e:
@@ -159,11 +198,14 @@ class OrderManager:
             side = getattr(order, 'side', '') or order.get('side', '')
             status_str = getattr(order, 'status', '') or order.get('status', '')
             
-            # Determine order type
+            # Determine order type and extract config
             order_config = getattr(order, 'order_configuration', {}) or order.get('order_configuration', {})
-            if 'stop_limit' in str(order_config).lower():
+            order_config_str = str(order_config).lower()
+            
+            is_stop_limit = 'stop_limit' in order_config_str
+            if is_stop_limit:
                 order_type = OrderType.STOP_LIMIT
-            elif 'limit' in str(order_config).lower():
+            elif 'limit' in order_config_str:
                 order_type = OrderType.LIMIT
             else:
                 order_type = OrderType.MARKET
@@ -174,14 +216,38 @@ class OrderManager:
             except KeyError:
                 status = OrderStatus.PENDING
             
-            # Get prices and sizes
+            # Get filled sizes
             filled_size = float(getattr(order, 'filled_size', 0) or order.get('filled_size', 0) or 0)
             filled_value = float(getattr(order, 'filled_value', 0) or order.get('filled_value', 0) or 0)
             avg_price = float(getattr(order, 'average_filled_price', 0) or order.get('average_filled_price', 0) or 0)
             fee = float(getattr(order, 'total_fees', 0) or order.get('total_fees', 0) or 0)
             
-            # Check if this is a stop order (by client_id convention)
-            is_stop = 'stop_' in client_id.lower() if client_id else False
+            # Extract base_size and stop_price from order_configuration
+            # For stop_limit orders, the size is in order_configuration.stop_limit_stop_limit_gtc.base_size
+            base_size = 0.0
+            stop_price = 0.0
+            limit_price = 0.0
+            
+            if isinstance(order_config, dict):
+                # Try stop_limit_stop_limit_gtc (GTC stop limit)
+                stop_config = order_config.get('stop_limit_stop_limit_gtc', {})
+                if not stop_config:
+                    # Try stop_limit_stop_limit_gtd (GTD stop limit)
+                    stop_config = order_config.get('stop_limit_stop_limit_gtd', {})
+                if not stop_config:
+                    # Try limit configs for regular limit orders
+                    stop_config = order_config.get('limit_limit_gtc', {}) or order_config.get('limit_limit_gtd', {})
+                
+                if stop_config:
+                    base_size = float(stop_config.get('base_size', 0) or 0)
+                    stop_price = float(stop_config.get('stop_price', 0) or 0)
+                    limit_price = float(stop_config.get('limit_price', 0) or 0)
+            
+            # Use filled_size if base_size not available (for filled orders)
+            size_qty = base_size if base_size > 0 else filled_size
+            
+            # Check if this is a stop order (by config or client_id convention)
+            is_stop = is_stop_limit or ('stop_' in client_id.lower() if client_id else False)
             
             return ManagedOrder(
                 order_id=order_id,
@@ -190,7 +256,9 @@ class OrderManager:
                 side=side,
                 order_type=order_type,
                 status=status,
-                price=avg_price,
+                price=limit_price if limit_price > 0 else avg_price,
+                stop_price=stop_price,
+                size_qty=size_qty,
                 filled_qty=filled_size,
                 filled_value=filled_value,
                 fee=fee,
@@ -209,6 +277,43 @@ class OrderManager:
                     self._position_orders[symbol] = PositionOrders(symbol=symbol)
                 self._position_orders[symbol].stop_order_id = order_id
                 logger.info("[ORDERS] Linked stop order %s... to %s", order_id[:8], symbol)
+    
+    def _persist_orders(self):
+        """Persist all orders to disk for comparison with exchange."""
+        try:
+            from execution.order_persistence import save_orders
+            
+            # Serialize orders
+            orders_data = {}
+            for order_id, order in self._orders.items():
+                orders_data[order_id] = {
+                    "order_id": order.order_id,
+                    "client_order_id": order.client_order_id,
+                    "symbol": order.symbol,
+                    "side": order.side,
+                    "order_type": order.order_type.value if order.order_type else None,
+                    "status": order.status.value if order.status else None,
+                    "stop_price": order.stop_price,
+                    "price": order.price,
+                    "size_qty": order.size_qty,
+                    "is_stop_order": order.is_stop_order,
+                    "created_at": order.created_at.isoformat() if order.created_at else None,
+                }
+            
+            # Serialize position orders
+            pos_orders_data = {}
+            for symbol, pos_orders in self._position_orders.items():
+                pos_orders_data[symbol] = {
+                    "symbol": pos_orders.symbol,
+                    "entry_order_id": pos_orders.entry_order_id,
+                    "stop_order_id": pos_orders.stop_order_id,
+                    "tp1_order_id": pos_orders.tp1_order_id,
+                    "tp2_order_id": pos_orders.tp2_order_id,
+                }
+            
+            save_orders(orders_data, pos_orders_data)
+        except Exception as e:
+            logger.warning("[ORDERS] Failed to persist orders: %s", e)
     
     def place_stop_order(
         self,
@@ -229,6 +334,7 @@ class OrderManager:
         # Resolve price and size increments
         price_increment = 0.01
         base_increment = 0.00000001  # Default for most crypto
+        base_min_size = 0.0
         try:
             product = self._client.get_product(symbol)
             price_increment = float(
@@ -240,9 +346,11 @@ class OrderManager:
                 getattr(product, "base_increment", None)
                 or 0.00000001
             )
+            base_min_size = float(getattr(product, "base_min_size", 0) or 0)
         except Exception:
             price_increment = 0.01
             base_increment = 0.00000001
+            base_min_size = 0.0
 
         def _quantize_price(value: float) -> float:
             """Round price to exchange-supported precision."""
@@ -264,10 +372,25 @@ class OrderManager:
         if limit_price is None:
             limit_price = calculate_limit_price(stop_price)  # 0.98 = 2% gap
 
+        try:
+            base_asset = symbol.split("-")[0]
+            # Force fresh balance fetch for stop orders to avoid INSUFFICIENT_FUND errors
+            available_qty = self._get_available_base_qty(base_asset, force_refresh=True)
+            if available_qty > 0 and qty > available_qty:
+                logger.info("[ORDERS] Clamping stop qty %.8f -> %.8f (available) for %s", qty, available_qty * 0.999, symbol)
+                qty = max(0.0, available_qty * 0.999)
+        except Exception as e:
+            logger.debug("[ORDERS] Could not fetch available balance for %s: %s", symbol, e)
+
         # Quantize prices and size to meet Coinbase precision requirements
         stop_price = _quantize_price(stop_price)
         limit_price = _quantize_price(limit_price)
         qty = _quantize_size(qty)
+
+        min_qty = base_min_size if base_min_size and base_min_size > 0 else base_increment
+        if qty <= 0 or (min_qty and qty < float(min_qty)):
+            logger.warning("[ORDERS] Stop skipped (qty too small): %s qty=%.10f", symbol, qty)
+            return None
 
         # Deduplicate: if an open stop already exists at effectively the same price, reuse it
         existing_stop = self.get_stop_order(symbol)
@@ -346,6 +469,9 @@ class OrderManager:
                         "qty": qty,
                     })
                     
+                    # Persist orders to disk
+                    self._persist_orders()
+                    
                     return order_id
                 else:
                     # Surface error details when available
@@ -421,8 +547,19 @@ class OrderManager:
     
     def has_stop_order(self, symbol: str) -> bool:
         """Check if a position has an active stop order."""
+        # First check linked position orders
         stop = self.get_stop_order(symbol)
-        return stop is not None and stop.status == OrderStatus.OPEN
+        if stop is not None and stop.status == OrderStatus.OPEN:
+            return True
+        
+        # Also check for ANY stop order for this symbol (catches orphaned orders)
+        for order in self._orders.values():
+            if (order.symbol == symbol and 
+                order.order_type in ("stop_limit", "stop") and
+                order.status == OrderStatus.OPEN):
+                return True
+        
+        return False
     
     def update_stop_price(self, symbol: str, new_stop_price: float) -> bool:
         """
@@ -436,6 +573,34 @@ class OrderManager:
         old_order = self._orders.get(pos_orders.stop_order_id)
         if not old_order:
             return False
+
+        # De-dupe: if the requested price is effectively the same as the current stop,
+        # do NOT churn cancel+replace (this spams stop_placed and can hit rate limits).
+        try:
+            price_increment = 0.01
+            try:
+                if self._client:
+                    product = self._client.get_product(symbol)
+                    price_increment = float(
+                        getattr(product, "price_increment", None)
+                        or getattr(product, "quote_increment", 0.01)
+                        or 0.01
+                    )
+            except Exception:
+                price_increment = 0.01
+
+            current_stop = float(getattr(old_order, "stop_price", 0.0) or 0.0)
+            if current_stop > 0 and abs(current_stop - float(new_stop_price)) < float(price_increment):
+                logger.debug(
+                    "[ORDERS] %s stop update skipped (no material change): %.8f ~ %.8f",
+                    symbol,
+                    current_stop,
+                    float(new_stop_price),
+                )
+                return True
+        except Exception:
+            # If dedupe fails, fall back to normal update behavior.
+            pass
         
         # Cancel old, place new
         if self.cancel_stop_order(symbol):

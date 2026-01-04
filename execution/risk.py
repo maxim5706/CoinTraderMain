@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class DailyStats:
-    """Daily trading statistics with compounding metrics."""
+    """Daily trading statistics with compounding metrics and persistence."""
     trades: int = 0
     wins: int = 0
     losses: int = 0
@@ -31,6 +31,9 @@ class DailyStats:
     
     # Track the date these stats are for
     stats_date: str = ""
+    
+    # Persistence path
+    _persist_path: str = "data/daily_stats.json"
     
     def check_reset(self):
         """Reset stats if it's a new day (UTC)."""
@@ -64,6 +67,74 @@ class DailyStats:
         self.total_pnl += pnl
         self.peak_pnl = max(self.peak_pnl, self.total_pnl)
         self.max_drawdown = min(self.max_drawdown, self.total_pnl - self.peak_pnl)
+        # Persist after each trade
+        self.save()
+    
+    def save(self):
+        """Persist daily stats to disk."""
+        import os
+        import tempfile
+        try:
+            path = Path(self._persist_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "trades": self.trades,
+                "wins": self.wins,
+                "losses": self.losses,
+                "total_pnl": self.total_pnl,
+                "max_drawdown": self.max_drawdown,
+                "peak_pnl": self.peak_pnl,
+                "total_win_pnl": self.total_win_pnl,
+                "total_loss_pnl": self.total_loss_pnl,
+                "biggest_win": self.biggest_win,
+                "biggest_loss": self.biggest_loss,
+                "stats_date": self.stats_date,
+            }
+            # Atomic write
+            temp_fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=".stats_", suffix=".tmp")
+            try:
+                with os.fdopen(temp_fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(temp_path, path)
+            except Exception:
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+                raise
+        except Exception as e:
+            logger.warning("[STATS] Failed to save daily stats: %s", e)
+    
+    @classmethod
+    def load(cls, mode: TradingMode = None) -> "DailyStats":
+        """Load daily stats from disk or create new."""
+        prefix = "live" if mode != TradingMode.PAPER else "paper"
+        path = Path(f"data/{prefix}_daily_stats.json")
+        stats = cls(_persist_path=str(path))
+        
+        if path.exists():
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                stats.trades = data.get("trades", 0)
+                stats.wins = data.get("wins", 0)
+                stats.losses = data.get("losses", 0)
+                stats.total_pnl = data.get("total_pnl", 0.0)
+                stats.max_drawdown = data.get("max_drawdown", 0.0)
+                stats.peak_pnl = data.get("peak_pnl", 0.0)
+                stats.total_win_pnl = data.get("total_win_pnl", 0.0)
+                stats.total_loss_pnl = data.get("total_loss_pnl", 0.0)
+                stats.biggest_win = data.get("biggest_win", 0.0)
+                stats.biggest_loss = data.get("biggest_loss", 0.0)
+                stats.stats_date = data.get("stats_date", "")
+                logger.info("[STATS] Loaded daily stats: %d trades, %d W / %d L, $%.2f PnL",
+                           stats.trades, stats.wins, stats.losses, stats.total_pnl)
+            except Exception as e:
+                logger.warning("[STATS] Failed to load daily stats: %s", e)
+        
+        # Check for day reset
+        stats.check_reset()
+        return stats
     
     @property
     def win_rate(self) -> float:

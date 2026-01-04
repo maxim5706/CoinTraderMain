@@ -80,6 +80,7 @@ class PositionDisplay:
     units: float
     size_usd: float
     entry_price: float
+    current_price: float
     stop_price: float
     tp1_price: float
     tp2_price: float
@@ -122,6 +123,12 @@ class BotState:
     startup_time: Optional[datetime] = None
     boot_phase: bool = True
     boot_started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    phase: str = "init"  # init/preflight/syncing/backfill/trading/stopped
+
+    # Config snapshots
+    config_start: dict = field(default_factory=dict)
+    config_running: dict = field(default_factory=dict)
+    config_last_refreshed: Optional[datetime] = None
     
     # Connectivity
     api_ok: bool = False
@@ -141,6 +148,12 @@ class BotState:
     holdings_value: float = 0.0
     starting_portfolio_value: float = 0.0
     actual_pnl: float = 0.0
+    
+    # Portfolio history (1h/1d/5d changes)
+    portfolio_change_1h: Optional[float] = None
+    portfolio_change_1d: Optional[float] = None
+    portfolio_change_5d: Optional[float] = None
+    portfolio_ath: float = 0.0  # All-time high
     
     # Portfolio - Paper
     paper_balance: float = 1000.0
@@ -192,6 +205,7 @@ class BotState:
     rejections_limits: int = 0
     last_rejection: Optional[tuple[str, str, str]] = None
     blocked_signals: list = field(default_factory=list)
+    last_gate_trace_by_symbol: dict[str, dict] = field(default_factory=dict)
     
     # Tier System
     tier1_count: int = 0
@@ -246,8 +260,14 @@ class BotState:
     
     # Collections
     burst_leaderboard: list[BurstCandidate] = field(default_factory=list)
+    predictive_plays: list = field(default_factory=list)  # MTF predictions [(symbol, confidence, direction)]
     positions: list[PositionDisplay] = field(default_factory=list)
     positions_display: list[PositionDisplay] = field(default_factory=list)
+    
+    # Dust & Reconciliation (for dashboard)
+    dust_positions: list = field(default_factory=list)  # Positions too small to sell
+    exchange_holdings: dict = field(default_factory=dict)  # Actual exchange holdings {symbol: value_usd}
+    max_positions: int = 100  # Effectively unlimited - exposure % is the real limit
     live_log: Deque[tuple[datetime, str, str]] = field(
         default_factory=lambda: deque(maxlen=100)
     )

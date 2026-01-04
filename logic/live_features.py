@@ -116,6 +116,15 @@ class LiveIndicators:
     ema_crosses_10: int = 0         # EMA 9/21 crosses in last 10 candles
     directional_ratio: float = 0.5  # % of candles in trend direction
     
+    # EDGE: Acceleration Score (volume increasing each candle = stronger move)
+    acceleration_score: float = 0.0  # 0-1, higher = volume accelerating
+    vol_streak: int = 0              # Consecutive candles of increasing volume
+    
+    # EDGE: Whale Detection (large orders hitting the book)
+    whale_activity: float = 0.0      # 0-1, higher = more whale activity
+    whale_bias: int = 0              # +1 = whale buying, -1 = whale selling, 0 = neutral
+    large_trade_count: int = 0       # Large trades in last 5 candles
+    
     def is_stale(self, max_age_seconds: float = 120) -> bool:
         """Check if indicators are stale (older than max_age_seconds)."""
         age = (datetime.now(timezone.utc) - self.timestamp).total_seconds()
@@ -506,7 +515,7 @@ class LiveFeatureEngine:
         return self.latest.get(symbol)
     
     def update_higher_tf(self, symbol: str, candles_1h: List, candles_1d: List):
-        """Update higher timeframe data from buffer candles."""
+        """Update higher timeframe data from buffer candles and recalculate indicators."""
         if symbol not in self.state:
             self.state[symbol] = FeatureState(symbol=symbol)
         
@@ -523,6 +532,22 @@ class LiveFeatureEngine:
             s.closes_1d = [c.close for c in candles_1d[-30:]]
             s.highs_1d = [c.high for c in candles_1d[-30:]]
             s.lows_1d = [c.low for c in candles_1d[-30:]]
+        
+        # Recalculate higher TF indicators immediately
+        # Create indicator entry if it doesn't exist
+        if symbol not in self.latest:
+            self.latest[symbol] = LiveIndicators(symbol=symbol)
+        ind = self.latest[symbol]
+        # 1H trend
+        if len(s.closes_1h) >= 2:
+            ind.trend_1h = (s.closes_1h[-1] / s.closes_1h[-2] - 1) * 100
+        if len(s.closes_1h) >= 4:
+            ind.trend_4h = (s.closes_1h[-1] / s.closes_1h[-4] - 1) * 100
+        # Daily trend
+        if len(s.closes_1d) >= 2:
+            ind.trend_1d = (s.closes_1d[-1] / s.closes_1d[-2] - 1) * 100
+        if len(s.closes_1d) >= 7:
+            ind.trend_7d = (s.closes_1d[-1] / s.closes_1d[-7] - 1) * 100
     
     def is_ready(self, symbol: str) -> bool:
         """Check if symbol has enough data for indicators."""
@@ -569,19 +594,16 @@ class LiveFeatureEngine:
         
         # ===== MACD =====
         if len(closes_1m) >= 26:
-            ema12 = self._compute_ema(closes_1m, 12)
-            ema26 = self._compute_ema(closes_1m, 26)
-            indicators.macd_line = ema12 - ema26
+            ema12_series = self._compute_ema_series(closes_1m, 12)
+            ema26_series = self._compute_ema_series(closes_1m, 26)
+            macd_series = ema12_series - ema26_series
+            indicators.macd_line = float(macd_series[-1])
             
             # Signal line (9-period EMA of MACD)
-            macd_values = []
-            for i in range(26, len(closes_1m) + 1):
-                e12 = self._compute_ema(closes_1m[:i], 12)
-                e26 = self._compute_ema(closes_1m[:i], 26)
-                macd_values.append(e12 - e26)
-            
+            macd_values = macd_series[25:]
             if len(macd_values) >= 9:
-                indicators.macd_signal = self._compute_ema(np.array(macd_values), 9)
+                macd_signal_series = self._compute_ema_series(macd_values, 9)
+                indicators.macd_signal = float(macd_signal_series[-1])
                 indicators.macd_histogram = indicators.macd_line - indicators.macd_signal
         
         # ===== EMA CROSS =====
@@ -648,10 +670,16 @@ class LiveFeatureEngine:
             
             # Slope of last 10 OBV values
             if len(obv) >= 10:
-                x = np.arange(10)
-                y = np.array(obv[-10:])
-                slope = np.polyfit(x, y, 1)[0]
-                indicators.obv_slope = slope / (np.mean(volumes_1m[-10:]) + 1)  # Normalize
+                y = obv[-10:]
+                n = len(y)
+                x_sum = (n - 1) * n / 2
+                x2_sum = (n - 1) * n * (2 * n - 1) / 6
+                y_sum = sum(y)
+                xy_sum = sum(i * y_val for i, y_val in enumerate(y))
+                denom = n * x2_sum - x_sum * x_sum
+                if denom != 0:
+                    slope = (n * xy_sum - x_sum * y_sum) / denom
+                    indicators.obv_slope = slope / (np.mean(volumes_1m[-10:]) + 1)  # Normalize
         
         # ===== BUY PRESSURE =====
         if len(candles_1m) >= 10:
@@ -666,6 +694,51 @@ class LiveFeatureEngine:
         indicators.spread_bps = spread_bps
         if vwap > 0 and closes_1m[-1] > 0:
             indicators.vwap_distance = (closes_1m[-1] / vwap - 1) * 100
+        
+        # ===== EDGE: ACCELERATION SCORE =====
+        # Volume increasing each candle = stronger move, catch it early
+        if len(volumes_1m) >= 5:
+            vol_streak = 0
+            for i in range(1, min(6, len(volumes_1m))):
+                if volumes_1m[-i] > volumes_1m[-i-1]:
+                    vol_streak += 1
+                else:
+                    break
+            indicators.vol_streak = vol_streak
+            # Score: 0-1 based on streak and volume growth rate
+            if vol_streak >= 2:
+                vol_growth = volumes_1m[-1] / volumes_1m[-vol_streak-1] if volumes_1m[-vol_streak-1] > 0 else 1
+                indicators.acceleration_score = min(1.0, (vol_streak / 5) * min(2.0, vol_growth) / 2)
+        
+        # ===== EDGE: WHALE DETECTION =====
+        # Large orders = institutional interest
+        if len(volumes_1m) >= 10 and len(candles_1m) >= 10:
+            avg_vol = np.mean(volumes_1m[-20:]) if len(volumes_1m) >= 20 else np.mean(volumes_1m)
+            whale_threshold = avg_vol * 3  # 3x avg volume = whale
+            
+            whale_buys = 0
+            whale_sells = 0
+            large_count = 0
+            
+            for i in range(min(5, len(candles_1m))):
+                c = candles_1m[-1-i]
+                if c.volume >= whale_threshold:
+                    large_count += 1
+                    # Determine direction by candle color
+                    if c.close > c.open:
+                        whale_buys += c.volume
+                    else:
+                        whale_sells += c.volume
+            
+            indicators.large_trade_count = large_count
+            total_whale = whale_buys + whale_sells
+            if total_whale > 0:
+                indicators.whale_activity = min(1.0, large_count / 3)  # Normalize
+                whale_ratio = (whale_buys - whale_sells) / total_whale
+                if whale_ratio > 0.3:
+                    indicators.whale_bias = 1  # Whales buying
+                elif whale_ratio < -0.3:
+                    indicators.whale_bias = -1  # Whales selling
         
         return indicators
     
@@ -686,6 +759,18 @@ class LiveFeatureEngine:
         
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
+
+    def _compute_ema_series(self, data: np.ndarray, period: int) -> np.ndarray:
+        """Compute EMA series."""
+        if len(data) == 0:
+            return np.array([], dtype=float)
+        
+        multiplier = 2 / (period + 1)
+        ema = np.empty(len(data), dtype=float)
+        ema[0] = float(data[0])
+        for i in range(1, len(data)):
+            ema[i] = (float(data[i]) - ema[i - 1]) * multiplier + ema[i - 1]
+        return ema
     
     def _compute_ema(self, data: np.ndarray, period: int) -> float:
         """Compute EMA."""
